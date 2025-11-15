@@ -154,13 +154,14 @@ def execute_crud_operation(sheet_name, data=None, id_col=None, id_value=None, op
 
     # 1. TRATAMENTO DE ID (SIMULAÇÃO DE AUTO_INCREMENT)
     new_id = None
+    id_col = f'id_{sheet_name}' if id_col is None else id_col
+    
     if operation == 'insert':
-        # Calcula o próximo ID
-        id_col = f'id_{sheet_name}' if id_col is None else id_col
+        # 🛑 CORREÇÃO DA LÓGICA DE AUTO-INCREMENTO (garante ID único)
         if df.empty:
             new_id = 1
-            df = pd.DataFrame(columns=data.keys()) # Cria DF vazio com as colunas
         else:
+            # Garante que o ID máximo é usado para calcular o próximo
             df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
             new_id = df[id_col].max() + 1
 
@@ -170,12 +171,15 @@ def execute_crud_operation(sheet_name, data=None, id_col=None, id_value=None, op
     if operation == 'insert':
         # Cria um novo DataFrame com os dados a serem inseridos
         df_new_row = pd.DataFrame([data])
+        
         # Concatena a nova linha. Garante a ordem das colunas.
         if df.empty:
             df_updated = df_new_row
         else:
             df_updated = pd.concat([df, df_new_row], ignore_index=True)
-            df_updated = df_updated[df.columns] # Reordena colunas
+            # Reordena colunas (necessário após concatenação)
+            if df.columns is not None and len(df.columns) > 0:
+                 df_updated = df_updated[df.columns] 
 
         success = write_sheet_data(sheet_name, df_updated)
         return success, new_id if success else None
@@ -373,11 +377,11 @@ def insert_service(id_veiculo, id_prestador, nome_servico, data_servico, garanti
 
     data = {
         'id_servico': 0, 'id_veiculo': int(id_veiculo), 'id_prestador': int(id_prestador),
-        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO
+        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO: Armazena como ISO string
         'garantia_dias': str(garantia_dias), 'valor': float(valor),
         'km_realizado': str(km_realizado), 'km_proxima_revisao': str(km_proxima_revisao),
         'registro': registro,
-        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO
+        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO: Armazena como ISO string
     }
 
     success, _ = execute_crud_operation('servico', data=data, id_col='id_servico', operation='insert')
@@ -399,11 +403,11 @@ def update_service(id_servico, id_veiculo, id_prestador, nome_servico, data_serv
 
     data = {
         'id_veiculo': int(id_veiculo), 'id_prestador': int(id_prestador),
-        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO
+        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO: Armazena como ISO string
         'garantia_dias': str(garantia_dias), 'valor': float(valor),
         'km_realizado': str(km_realizado), 'km_proxima_revisao': str(km_proxima_revisao),
         'registro': registro,
-        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO
+        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO: Armazena como ISO string
     }
 
     success, _ = execute_crud_operation('servico', data=data, id_col='id_servico', id_value=int(id_servico), operation='update')
