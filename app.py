@@ -47,11 +47,9 @@ def get_sheet_data(sheet_name):
             sh = gc.open_by_key(SHEET_ID)
         except Exception:
             try:
-                # O warning é útil para debug, mas pode ser comentado se não for mais necessário
-                # st.warning(f"Falha ao abrir por Chave. Tentando por Título: '{PLANILHA_TITULO}'...")
+                #st.warning(f"Falha ao abrir por Chave. Tentando por Título: '{PLANILHA_TITULO}'...")
                 sh = gc.open(PLANILHA_TITULO) 
             except Exception as e:
-                # Falha crítica após esgotar as opções
                 st.error(f"Falha Crítica ao conectar à planilha. Verifique se a Service Account tem permissão de EDITOR: {e}")
                 return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
         
@@ -219,8 +217,12 @@ def execute_crud_operation(sheet_name, data=None, id_col=None, id_value=None, op
 # Veículo
 
 def insert_vehicle(nome, placa, ano, valor_pago, data_compra):
-
-    # 🛑 CORRIGIDO: usa .isoformat() para evitar erro Timestamp
+    
+    # 🛑 REGRA: PLACA OBRIGATÓRIA E CHAVE PRIMÁRIA
+    if not placa:
+        st.error("A Placa é obrigatória para o cadastro do veículo.")
+        return False
+        
     if placa:
         df_check = get_data('veiculo', 'placa', placa)
         if not df_check.empty:
@@ -245,7 +247,11 @@ def insert_vehicle(nome, placa, ano, valor_pago, data_compra):
 
 def update_vehicle(id_veiculo, nome, placa, ano, valor_pago, data_compra):
 
-    # 🛑 CORRIGIDO: usa .isoformat() para evitar erro Timestamp
+    # 🛑 REGRA: PLACA OBRIGATÓRIA E CHAVE PRIMÁRIA
+    if not placa:
+        st.error("A Placa é obrigatória para a atualização do veículo.")
+        return False
+    
     if placa:
         df_check = get_data('veiculo', 'placa', placa)
         if not df_check.empty:
@@ -290,9 +296,15 @@ def delete_vehicle(id_veiculo):
 # Prestador
 
 def insert_new_prestador(empresa, telefone, nome_prestador, cnpj, email, endereco, numero, cidade, bairro, cep):
-    df_check = get_data("prestador", "empresa", empresa)
+    
+    # 🛑 REGRA: CNPJ OBRIGATÓRIO E CHAVE PRIMÁRIA
+    if not cnpj:
+        st.error("O CNPJ é obrigatório para o cadastro do prestador.")
+        return False
+        
+    df_check = get_data("prestador", "cnpj", cnpj)
     if not df_check.empty:
-        st.warning(f"A empresa '{empresa}' já está cadastrada.")
+        st.warning(f"O CNPJ '{cnpj}' já está cadastrado.")
         return False
 
     data = {
@@ -312,6 +324,19 @@ def insert_new_prestador(empresa, telefone, nome_prestador, cnpj, email, enderec
 
 
 def update_prestador(id_prestador, empresa, telefone, nome_prestador, cnpj, email, endereco, numero, cidade, bairro, cep):
+    
+    # 🛑 REGRA: CNPJ OBRIGATÓRIO E CHAVE PRIMÁRIA
+    if not cnpj:
+        st.error("O CNPJ é obrigatório para a atualização do prestador.")
+        return False
+        
+    df_check = get_data("prestador", "cnpj", cnpj)
+    if not df_check.empty:
+        found_id = df_check.iloc[0]['id_prestador']
+        if found_id != int(id_prestador):
+            st.error(f"O CNPJ '{cnpj}' já está cadastrado para outro prestador (ID {found_id}).")
+            return False
+
     data = {
         'empresa': empresa, 'telefone': telefone, 'nome_prestador': nome_prestador,
         'cnpj': cnpj, 'email': email, 'endereco': endereco, 'numero': numero,
@@ -370,6 +395,17 @@ def insert_prestador(empresa, telefone, nome_prestador, cnpj, email, endereco, n
 # Serviço
 
 def insert_service(id_veiculo, id_prestador, nome_servico, data_servico, garantia_dias, valor, km_realizado, km_proxima_revisao, registro):
+    
+    # 🛑 REGRA: REGISTRO OBRIGATÓRIO E CHAVE PRIMÁRIA
+    if not registro:
+        st.error("O Registro Adicional é obrigatório para o cadastro do serviço.")
+        return False
+        
+    df_check = get_data("servico", "registro", registro)
+    if not df_check.empty:
+        st.warning(f"O Registro '{registro}' já está cadastrado.")
+        return False
+        
     data_servico_dt = pd.to_datetime(data_servico)
     # Garante que garantia_dias é inteiro para o timedelta
     garantia_dias_int = int(garantia_dias)
@@ -377,11 +413,11 @@ def insert_service(id_veiculo, id_prestador, nome_servico, data_servico, garanti
 
     data = {
         'id_servico': 0, 'id_veiculo': int(id_veiculo), 'id_prestador': int(id_prestador),
-        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO: Armazena como ISO string
+        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO
         'garantia_dias': str(garantia_dias), 'valor': float(valor),
         'km_realizado': str(km_realizado), 'km_proxima_revisao': str(km_proxima_revisao),
         'registro': registro,
-        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO: Armazena como ISO string
+        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO
     }
 
     success, _ = execute_crud_operation('servico', data=data, id_col='id_servico', operation='insert')
@@ -396,6 +432,19 @@ def insert_service(id_veiculo, id_prestador, nome_servico, data_servico, garanti
 
 
 def update_service(id_servico, id_veiculo, id_prestador, nome_servico, data_servico, garantia_dias, valor, km_realizado, km_proxima_revisao, registro):
+    
+    # 🛑 REGRA: REGISTRO OBRIGATÓRIO E CHAVE PRIMÁRIA
+    if not registro:
+        st.error("O Registro Adicional é obrigatório para a atualização do serviço.")
+        return False
+        
+    df_check = get_data("servico", "registro", registro)
+    if not df_check.empty:
+        found_id = df_check.iloc[0]['id_servico']
+        if found_id != int(id_servico):
+            st.warning(f"O Registro '{registro}' já está cadastrado para outro serviço (ID {found_id}).")
+            return False
+            
     data_servico_dt = pd.to_datetime(data_servico)
     # Garante que garantia_dias é inteiro para o timedelta
     garantia_dias_int = int(garantia_dias)
