@@ -47,9 +47,11 @@ def get_sheet_data(sheet_name):
             sh = gc.open_by_key(SHEET_ID)
         except Exception:
             try:
-                #st.warning(f"Falha ao abrir por Chave. Tentando por Título: '{PLANILHA_TITULO}'...")
+                # O warning é útil para debug, mas pode ser comentado se não for mais necessário
+                # st.warning(f"Falha ao abrir por Chave. Tentando por Título: '{PLANILHA_TITULO}'...")
                 sh = gc.open(PLANILHA_TITULO) 
             except Exception as e:
+                # Falha crítica após esgotar as opções
                 st.error(f"Falha Crítica ao conectar à planilha. Verifique se a Service Account tem permissão de EDITOR: {e}")
                 return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
         
@@ -155,12 +157,12 @@ def execute_crud_operation(sheet_name, data=None, id_col=None, id_value=None, op
     id_col = f'id_{sheet_name}' if id_col is None else id_col
     
     if operation == 'insert':
-        # 🛑 CORREÇÃO DA LÓGICA DE AUTO-INCREMENTO (garante ID único)
+        # 🛑 CORREÇÃO DA LÓGICA DE AUTO-INCREMENTO (agora é robusta para todas as abas)
         if df.empty:
             new_id = 1
         else:
             # Garante que o ID máximo é usado para calcular o próximo
-            df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
+            # O get_data já fez a conversão para int, então esta linha é segura.
             new_id = df[id_col].max() + 1
 
         data[id_col] = new_id
@@ -217,7 +219,7 @@ def execute_crud_operation(sheet_name, data=None, id_col=None, id_value=None, op
 # Veículo
 
 def insert_vehicle(nome, placa, ano, valor_pago, data_compra):
-    
+
     # 🛑 REGRA: PLACA OBRIGATÓRIA E CHAVE PRIMÁRIA
     if not placa:
         st.error("A Placa é obrigatória para o cadastro do veículo.")
@@ -413,11 +415,11 @@ def insert_service(id_veiculo, id_prestador, nome_servico, data_servico, garanti
 
     data = {
         'id_servico': 0, 'id_veiculo': int(id_veiculo), 'id_prestador': int(id_prestador),
-        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO
+        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO: Armazena como ISO string
         'garantia_dias': str(garantia_dias), 'valor': float(valor),
         'km_realizado': str(km_realizado), 'km_proxima_revisao': str(km_proxima_revisao),
         'registro': registro,
-        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO
+        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO: Armazena como ISO string
     }
 
     success, _ = execute_crud_operation('servico', data=data, id_col='id_servico', operation='insert')
@@ -754,7 +756,10 @@ def manage_vehicle_form():
 
             col1, col2 = st.columns(2)
             with col1:
-                placa = st.text_input("Placa (Opcional)", value=data['placa'], max_chars=10) # 🛑 ALTERAÇÃO: Placa opcional
+                placa = st.text_input("Placa (Obrigatório, Chave Primária)", value=data['placa'], max_chars=10) # 🛑 ALTERADO
+            with col2:
+                # Campo renavam removido da interface, mas mantido no expected_cols
+                pass 
 
             col3, col4 = st.columns(2)
             with col3:
@@ -771,13 +776,15 @@ def manage_vehicle_form():
             with col5:
                 data_compra = st.date_input("Data de Compra", value=data['data_compra'])
 
-            renavam_dummy = None
+            renavam_dummy = None # O campo renavam não é usado no formulário
 
             submit_button = st.form_submit_button(label=submit_label)
 
             if submit_button:
-                if not vehicle_name: # 🛑 ALTERAÇÃO: Placa não é mais obrigatória na validação
+                if not vehicle_name: 
                     st.warning("O Nome é um campo obrigatório.")
+                elif not placa: # 🛑 VERIFICAÇÃO DE PLACA OBRIGATÓRIA
+                    st.error("A Placa é obrigatória.")
                 elif is_new_mode:
                     insert_vehicle(vehicle_name, placa, ano, valor_pago, data_compra)
                 else:
@@ -857,7 +864,7 @@ def manage_prestador_form():
 
             col_p3, col_p4 = st.columns(2)
             with col_p3:
-                cnpj = st.text_input("CNPJ", value=data['cnpj'] or "", max_chars=18)
+                cnpj = st.text_input("CNPJ (Obrigatório, Chave Primária)", value=data['cnpj'] or "", max_chars=18) # 🛑 ALTERADO
             with col_p4:
                 email = st.text_input("E-mail", value=data['email'] or "", max_chars=100)
 
@@ -881,6 +888,9 @@ def manage_prestador_form():
             if submit_button:
                 if not company_name:
                     st.warning("O nome da empresa é obrigatório.")
+                    return
+                elif not cnpj: # 🛑 VERIFICAÇÃO DE CNPJ OBRIGATÓRIA
+                    st.error("O CNPJ é obrigatório.")
                     return
 
                 args = (company_name, telefone, nome_prestador, cnpj, email, endereco, numero, cidade, bairro, cep)
@@ -994,7 +1004,7 @@ def manage_service_form():
             st.caption("Detalhes do Serviço")
             service_name = st.text_input("Nome do Serviço", value=data['nome_servico'], max_chars=100)
 
-            registro = st.text_input("Registro Adicional (Ex: N° NF, Código)", value=data.get('registro') or "", max_chars=50)
+            registro = st.text_input("Registro Adicional (Obrigatório, Chave Primária)", value=data.get('registro') or "", max_chars=50) # 🛑 ALTERADO
 
             default_service_date = data['data_servico']
             service_date = st.date_input("Data do Serviço", value=default_service_date)
@@ -1022,6 +1032,10 @@ def manage_service_form():
                 if not service_name:
                     st.warning("Preencha o Nome do Serviço.")
                     return
+                if not registro: # 🛑 VERIFICAÇÃO DE REGISTRO OBRIGATÓRIA
+                    st.error("O Registro Adicional é obrigatório.")
+                    return
+
 
                 new_id_veiculo = int(veiculos_map[selected_vehicle])
                 prestador_row = df_prestadores[df_prestadores['empresa'] == selected_company_name]
