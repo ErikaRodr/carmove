@@ -4,7 +4,6 @@ from datetime import date, timedelta
 import time
 import gspread 
 import numpy as np 
-# Mantendo a lógica de ID original (int)
 
 # ==============================================================================
 # 🚨 CONFIGURAÇÃO GOOGLE SHEETS E CONEXÃO (DUPLA LÓGICA) 🚨
@@ -47,7 +46,8 @@ def get_sheet_data(sheet_name):
             sh = gc.open_by_key(SHEET_ID)
         except Exception:
             try:
-                st.warning(f"Falha ao abrir por Chave. Tentando por Título: '{PLANILHA_TITULO}'...")
+                # O warning é útil para debug, mas pode ser comentado se não for mais necessário
+                # st.warning(f"Falha ao abrir por Chave. Tentando por Título: '{PLANILHA_TITULO}'...")
                 sh = gc.open(PLANILHA_TITULO) 
             except Exception as e:
                 # Falha crítica após esgotar as opções
@@ -61,7 +61,7 @@ def get_sheet_data(sheet_name):
         if df.empty:
             return pd.DataFrame(columns=expected_cols.get(sheet_name, []))
             
-        # Garante que as colunas de ID sejam tratadas como inteiros
+        # Garante que as colunas de ID sejam tratadas como inteiros (lógica original)
         id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
         if id_col in df.columns:
             df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
