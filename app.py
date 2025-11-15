@@ -4,6 +4,7 @@ from datetime import date, timedelta
 import time
 import gspread 
 import numpy as np 
+# Mantendo a lógica de ID original (int)
 
 # ==============================================================================
 # 🚨 CONFIGURAÇÃO GOOGLE SHEETS E CONEXÃO (DUPLA LÓGICA) 🚨
@@ -252,7 +253,7 @@ def update_vehicle(id_veiculo, nome, placa, ano, valor_pago, data_compra):
 
     data = {
         'nome': nome, 'placa': placa,
-        'ano': ano, 'valor_pago': float(valor_pago), 'data_compra': data_compra.isoformat()
+        'ano': ano, 'valor_pago': float(valor_pago), 'data_compra': data_compra.isoformat() # ✅ GARANTINDO O FORMATO ISO
     }
 
     success, _ = execute_crud_operation('veiculo', data=data, id_col='id_veiculo', id_value=int(id_veiculo), operation='update')
@@ -372,11 +373,11 @@ def insert_service(id_veiculo, id_prestador, nome_servico, data_servico, garanti
 
     data = {
         'id_servico': 0, 'id_veiculo': int(id_veiculo), 'id_prestador': int(id_prestador),
-        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO: Armazena como ISO string
+        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO
         'garantia_dias': str(garantia_dias), 'valor': float(valor),
         'km_realizado': str(km_realizado), 'km_proxima_revisao': str(km_proxima_revisao),
         'registro': registro,
-        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO: Armazena como ISO string
+        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO
     }
 
     success, _ = execute_crud_operation('servico', data=data, id_col='id_servico', operation='insert')
@@ -398,11 +399,11 @@ def update_service(id_servico, id_veiculo, id_prestador, nome_servico, data_serv
 
     data = {
         'id_veiculo': int(id_veiculo), 'id_prestador': int(id_prestador),
-        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO: Armazena como ISO string
+        'nome_servico': nome_servico, 'data_servico': data_servico_dt.date().isoformat(), # 🛑 CORRIGIDO
         'garantia_dias': str(garantia_dias), 'valor': float(valor),
         'km_realizado': str(km_realizado), 'km_proxima_revisao': str(km_proxima_revisao),
         'registro': registro,
-        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO: Armazena como ISO string
+        'data_vencimento': data_vencimento.date().isoformat() # 🛑 CORRIGIDO
     }
 
     success, _ = execute_crud_operation('servico', data=data, id_col='id_servico', id_value=int(id_servico), operation='update')
