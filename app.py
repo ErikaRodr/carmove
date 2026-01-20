@@ -12,7 +12,6 @@ import numpy as np
 SHEET_ID = '1BNjgWhvEj8NbnGr4x7F42LW7QbQiG5kZ1FBhfr9Q-4g'
 PLANILHA_TITULO = 'Dados Automóvel'
 
-# Define as colunas esperadas para garantir que o formulário apareça
 EXPECTED_COLS = {
     'veiculo': ['id_veiculo', 'nome', 'placa', 'ano', 'valor_pago', 'data_compra'],
     'prestador': ['id_prestador', 'empresa', 'telefone', 'nome_prestador', 'cnpj', 'email', 'endereco', 'numero', 'cidade', 'bairro', 'cep'],
@@ -51,7 +50,6 @@ def get_sheet_data(sheet_name):
         return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
 def get_data(sheet_name, filter_col=None, filter_value=None):
-    """Busca dados com filtro seguro (Resolve o NameError)."""
     df = get_sheet_data(sheet_name)
     if df.empty: return df
     
@@ -66,7 +64,6 @@ def get_data(sheet_name, filter_col=None, filter_value=None):
     return df
 
 def write_sheet_data(sheet_name, df_new):
-    """Salva dados tratando erros de JSON/NaN."""
     try:
         gc = get_gspread_client()
         sh = gc.open_by_key(SHEET_ID) if SHEET_ID else gc.open(PLANILHA_TITULO)
@@ -78,7 +75,6 @@ def write_sheet_data(sheet_name, df_new):
         for col in df_save.select_dtypes(include=['datetime64']).columns:
             df_save[col] = df_save[col].dt.strftime('%Y-%m-%d')
             
-        # 🔥 LIMPEZA CRÍTICA: Remove NaN e Infinitos que quebram o Google Sheets
         df_save = df_save.fillna("") 
         df_save = df_save.replace([np.inf, -np.inf], 0)
         
@@ -128,7 +124,6 @@ def get_full_service_data():
 
     if df_s.empty: return pd.DataFrame()
 
-    # Garante tipagem para o Merge
     df_s['id_veiculo'] = pd.to_numeric(df_s['id_veiculo'], errors='coerce').fillna(0).astype(int)
     df_s['id_prestador'] = pd.to_numeric(df_s['id_prestador'], errors='coerce').fillna(0).astype(int)
     
@@ -146,17 +141,18 @@ def get_full_service_data():
         df_merged['empresa'] = '-'
 
     df_merged['data_vencimento'] = pd.to_datetime(df_merged['data_vencimento'], errors='coerce')
+    df_merged['data_servico'] = pd.to_datetime(df_merged['data_servico'], errors='coerce')
+    
     df_merged['valor'] = pd.to_numeric(df_merged['valor'], errors='coerce').fillna(0.0)
     df_merged['Dias p/ Vencer'] = (df_merged['data_vencimento'] - pd.to_datetime(date.today())).dt.days
     
-    return df_merged
+    return df_merged.sort_values(by='data_servico', ascending=False)
 
 # ==============================================================================
 # 4. INTERFACES DE GESTÃO (UI)
 # ==============================================================================
 
 def generic_management_ui(category_name, sheet_name, display_col):
-    """UI genérica para Veículos e Prestadores."""
     st.subheader(f"Gestão de {category_name}")
     state_key = f'edit_{sheet_name}_id'
     id_col = f'id_{sheet_name}'
@@ -196,14 +192,27 @@ def generic_management_ui(category_name, sheet_name, display_col):
             for col in cols:
                 if col == id_col: continue
                 val = curr.get(col, "")
+                label = col.replace("_", " ").title()
+
                 if "data" in col:
                     try: d = pd.to_datetime(val) if val else date.today()
                     except: d = date.today()
-                    payload[col] = st.date_input(col, value=d)
-                elif any(x in col for x in ["valor", "ano", "numero"]):
-                    payload[col] = st.number_input(col, value=float(val) if val else 0.0)
+                    payload[col] = st.date_input(label, value=d, format="DD/MM/YYYY")
+                
+                # 🟢 AJUSTE: Campos que são estritamente inteiros (Sem vírgula)
+                elif any(x in col for x in ["telefone", "numero", "ano", "km"]):
+                    try: n_val = int(float(val)) if val else 0
+                    except: n_val = 0
+                    payload[col] = st.number_input(label, value=n_val, step=1, format="%d")
+                
+                # Campos de valor monetário (Com vírgula)
+                elif "valor" in col:
+                    try: n_val = float(val) if val else 0.0
+                    except: n_val = 0.0
+                    payload[col] = st.number_input(label, value=n_val, format="%.2f")
+                
                 else:
-                    payload[col] = st.text_input(col, value=str(val))
+                    payload[col] = st.text_input(label, value=str(val))
             
             if st.form_submit_button("Salvar"):
                 for k,v in payload.items():
@@ -218,22 +227,18 @@ def generic_management_ui(category_name, sheet_name, display_col):
             st.rerun()
 
 def service_management_ui():
-    """UI ESPECÍFICA PARA SERVIÇOS (COM SELECTBOX)."""
     st.subheader("Gestão de Serviços")
     state_key = 'edit_servico_id'
     
-    # Carrega dados auxiliares para o Selectbox
     df_v = get_sheet_data('veiculo')
     df_p = get_sheet_data('prestador')
     
-    # Cria dicionários {Nome: ID}
     map_v = {f"{r['nome']} ({r.get('placa','S/P')})": int(r['id_veiculo']) for _, r in df_v.iterrows()} if not df_v.empty else {}
     map_p = {f"{r['empresa']}": int(r['id_prestador']) for _, r in df_p.iterrows()} if not df_p.empty else {}
     
-    # Lista
     if st.session_state[state_key] is None:
         if not map_v or not map_p:
-            st.warning("⚠️ Cadastre Veículos e Prestadores antes de lançar Serviços.")
+            st.warning("⚠️ Cadastre Veículos e Prestadores antes.")
             return
 
         if st.button("➕ Novo Serviço"):
@@ -242,9 +247,14 @@ def service_management_ui():
             
         df = get_sheet_data('servico')
         if not df.empty:
+            if 'data_servico' in df.columns:
+                df['data_servico_dt'] = pd.to_datetime(df['data_servico'], errors='coerce')
+            
             for _, row in df.iterrows():
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
-                c1.write(f"**{row.get('nome_servico')}** - {row.get('data_servico')}")
+                data_show = row['data_servico_dt'].strftime('%d/%m/%Y') if pd.notna(row.get('data_servico_dt')) else ""
+                
+                c1.write(f"**{row.get('nome_servico')}** - {data_show}")
                 sid = int(row.get('id_servico', 0))
                 if c2.button("✏️", key=f"ed_s_{sid}"):
                     st.session_state[state_key] = sid
@@ -255,7 +265,6 @@ def service_management_ui():
         else:
             st.info("Nenhum serviço.")
 
-    # Formulário Especial de Serviço
     else:
         df = get_sheet_data('servico')
         is_new = st.session_state[state_key] == 'NEW'
@@ -271,7 +280,6 @@ def service_management_ui():
                 current_id_p = int(curr.get('id_prestador', 0))
 
         with st.form("form_servico_especial"):
-            # Encontra o índice correto para o selectbox
             idx_v = list(map_v.values()).index(current_id_v) if current_id_v in map_v.values() else 0
             idx_p = list(map_p.values()).index(current_id_p) if current_id_p in map_p.values() else 0
             
@@ -283,17 +291,21 @@ def service_management_ui():
             c_dt, c_gr = st.columns(2)
             try: dt_val = pd.to_datetime(curr.get('data_servico')) if curr.get('data_servico') else date.today()
             except: dt_val = date.today()
-            data_s = c_dt.date_input("Data Serviço", value=dt_val)
+            
+            data_s = c_dt.date_input("Data Serviço", value=dt_val, format="DD/MM/YYYY")
             garantia = c_gr.number_input("Garantia (dias)", value=int(curr.get('garantia_dias', 90)))
             
             c_val, c_km = st.columns(2)
-            valor = c_val.number_input("Valor (R$)", value=float(curr.get('valor', 0.0)))
-            km_r = c_km.number_input("KM Realizado", value=float(curr.get('km_realizado', 0)))
+            valor = c_val.number_input("Valor (R$)", value=float(curr.get('valor', 0.0)), format="%.2f")
+            
+            # 🟢 AJUSTE: KM como Inteiro
+            try: km_val = int(float(curr.get('km_realizado', 0)))
+            except: km_val = 0
+            km_r = c_km.number_input("KM Realizado", value=km_val, step=1, format="%d")
             
             registro = st.text_input("Nota/Registro", value=curr.get('registro', ''))
             
             if st.form_submit_button("Salvar Serviço"):
-                # Calcula Data Vencimento
                 dt_venc = data_s + timedelta(days=int(garantia))
                 
                 payload = {
@@ -303,7 +315,7 @@ def service_management_ui():
                     'data_servico': data_s.strftime('%Y-%m-%d'),
                     'garantia_dias': int(garantia),
                     'valor': float(valor),
-                    'km_realizado': km_r,
+                    'km_realizado': int(km_r),
                     'registro': registro,
                     'data_vencimento': dt_venc.strftime('%Y-%m-%d')
                 }
@@ -326,10 +338,8 @@ def service_management_ui():
 
 def run_auto_test_data():
     st.info("Simulando...")
-    # Veículo
     execute_crud_operation('veiculo', data={'nome': 'Civic Teste', 'placa': 'TST-0001', 'ano': 2023, 'valor_pago': 150000, 'data_compra': '2023-01-01'}, operation='insert')
-    # Prestador
-    execute_crud_operation('prestador', data={'empresa': 'Oficina Master', 'telefone': '1199999', 'cnpj': '00.000/0001-00'}, operation='insert')
+    execute_crud_operation('prestador', data={'empresa': 'Oficina Master', 'telefone': 1199999, 'cnpj': '00.000/0001-00'}, operation='insert')
     time.sleep(1.5)
     
     df_v = get_data('veiculo', 'placa', 'TST-0001')
@@ -374,16 +384,19 @@ def main():
         df_full = get_full_service_data()
         if not df_full.empty:
             cols = ['nome', 'placa', 'nome_servico', 'empresa', 'data_servico', 'valor', 'Dias p/ Vencer']
-            st.dataframe(df_full[[c for c in cols if c in df_full.columns]], use_container_width=True)
+            df_display = df_full[cols].copy()
+            if 'data_servico' in df_display.columns:
+                df_display['data_servico'] = df_display['data_servico'].dt.strftime('%d/%m/%Y')
+            
+            st.dataframe(df_display, use_container_width=True)
         else:
             st.info("Histórico vazio.")
 
     with tab_manual:
-        # 🔥 CORREÇÃO: Menu correto
         opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True)
         st.divider()
         if opcao == "Veículo": generic_management_ui("Veículo", "veiculo", "nome")
-        elif opcao == "Serviço": service_management_ui() # 🔥 UI NOVA PARA SERVIÇO
+        elif opcao == "Serviço": service_management_ui()
         elif opcao == "Prestador": generic_management_ui("Prestador", "prestador", "empresa")
 
 if __name__ == '__main__':
