@@ -4,6 +4,7 @@ from datetime import date, timedelta
 import time
 import gspread
 import numpy as np
+import altair as alt
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO E CONEXÃO
@@ -199,13 +200,13 @@ def generic_management_ui(category_name, sheet_name, display_col):
                     except: d = date.today()
                     payload[col] = st.date_input(label, value=d, format="DD/MM/YYYY")
                 
-                # 🟢 AJUSTE: Campos que são estritamente inteiros (Sem vírgula)
+                # Inteiros (Sem vírgula)
                 elif any(x in col for x in ["telefone", "numero", "ano", "km"]):
                     try: n_val = int(float(val)) if val else 0
                     except: n_val = 0
                     payload[col] = st.number_input(label, value=n_val, step=1, format="%d")
                 
-                # Campos de valor monetário (Com vírgula)
+                # Valores Monetários
                 elif "valor" in col:
                     try: n_val = float(val) if val else 0.0
                     except: n_val = 0.0
@@ -298,7 +299,6 @@ def service_management_ui():
             c_val, c_km = st.columns(2)
             valor = c_val.number_input("Valor (R$)", value=float(curr.get('valor', 0.0)), format="%.2f")
             
-            # 🟢 AJUSTE: KM como Inteiro
             try: km_val = int(float(curr.get('km_realizado', 0)))
             except: km_val = 0
             km_r = c_km.number_input("KM Realizado", value=km_val, step=1, format="%d")
@@ -370,19 +370,42 @@ def main():
         st.header("⚙️ Ferramentas")
         if st.button("🧪 Rodar Simulação"): run_auto_test_data()
 
+    # ABA RESUMO
     with tab_resumo:
         df_full = get_full_service_data()
         if not df_full.empty:
             c1, c2 = st.columns(2)
             c1.metric("Total Gasto", f"R$ {df_full['valor'].sum():,.2f}")
             c2.metric("Serviços", len(df_full))
-            st.bar_chart(df_full.groupby('nome')['valor'].sum())
+            
+            st.divider()
+            st.subheader("Gastos por Veículo")
+            
+            df_chart = df_full.groupby('nome', as_index=False)['valor'].sum()
+            chart = alt.Chart(df_chart).mark_bar().encode(
+                x=alt.X('nome', sort='-y', title='Veículo'),
+                y=alt.Y('valor', title='Total Gasto'),
+                tooltip=[alt.Tooltip('nome', title='Veículo'), alt.Tooltip('valor', format=',.2f', title='Valor')],
+                color=alt.value('#FF4B4B')
+            ).properties(height=400).interactive()
+            st.altair_chart(chart, use_container_width=True)
         else:
             st.info("Sem dados de serviço.")
 
+    # ABA HISTÓRICO COM FILTRO NOVO 🟢
     with tab_hist:
         df_full = get_full_service_data()
         if not df_full.empty:
+            # --- FILTRO POR VEÍCULO 🟢 ---
+            st.subheader("Filtros")
+            lista_veiculos = ["Todos"] + sorted(list(df_full['nome'].unique()))
+            veiculo_selecionado = st.selectbox("Selecione o Veículo:", lista_veiculos)
+            
+            # Aplica o filtro se não for "Todos"
+            if veiculo_selecionado != "Todos":
+                df_full = df_full[df_full['nome'] == veiculo_selecionado]
+            # -----------------------------
+
             cols = ['nome', 'placa', 'nome_servico', 'empresa', 'data_servico', 'valor', 'Dias p/ Vencer']
             df_display = df_full[cols].copy()
             if 'data_servico' in df_display.columns:
