@@ -31,7 +31,7 @@ def get_gspread_client():
 
 @st.cache_data(ttl=0)
 def get_sheet_data(sheet_name):
-    # Tenta ler 3 vezes para garantir que não venha vazio por erro de rede
+    # Tenta ler até 3 vezes para evitar erros de API ou leitura vazia falsa
     for _ in range(3):
         try:
             gc = get_gspread_client()
@@ -49,9 +49,23 @@ def get_sheet_data(sheet_name):
             
             return df
         except Exception:
-            time.sleep(1) # Espera 1 segundo e tenta de novo
+            time.sleep(0.5) 
             
     return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
+
+def get_data(sheet_name, filter_col=None, filter_value=None):
+    df = get_sheet_data(sheet_name)
+    if df.empty: return df
+    
+    if filter_col and filter_value is not None:
+        try:
+            if str(filter_col).startswith('id_'):
+                df[filter_col] = pd.to_numeric(df[filter_col], errors='coerce').fillna(0).astype(int)
+                filter_value = int(filter_value)
+            return df[df[filter_col] == filter_value]
+        except:
+            return pd.DataFrame(columns=df.columns)
+    return df
 
 def write_sheet_data(sheet_name, df_new):
     try:
@@ -69,7 +83,7 @@ def write_sheet_data(sheet_name, df_new):
         worksheet.clear()
         worksheet.update('A1', [df_save.columns.tolist()] + df_save.values.tolist(), value_input_option='USER_ENTERED')
         
-        # Limpa o cache imediatamente para atualizar a tela
+        # Limpa cache imediatamente
         get_sheet_data.clear()
         return True
     except Exception as e:
@@ -77,7 +91,7 @@ def write_sheet_data(sheet_name, df_new):
         return False
 
 # ==============================================================================
-# 2. CRUD (SIMPLES - SEM DEPENDÊNCIA, COM KEYS CORRIGIDAS)
+# 2. CRUD
 # ==============================================================================
 
 def execute_crud_operation(sheet_name, data=None, id_value=None, operation='insert'):
@@ -100,6 +114,7 @@ def execute_crud_operation(sheet_name, data=None, id_value=None, operation='inse
         return False
 
     elif operation == 'delete':
+        # Exclusão direta sem verificação de dependência (solicitado pelo usuário)
         df_updated = df[df[id_col] != int(id_value)]
         return write_sheet_data(sheet_name, df_updated)
 
@@ -114,7 +129,6 @@ def get_full_service_data():
 
     if df_s.empty: return pd.DataFrame()
 
-    # Conversão segura de tipos
     df_s['id_veiculo'] = pd.to_numeric(df_s['id_veiculo'], errors='coerce').fillna(0).astype(int)
     df_s['id_prestador'] = pd.to_numeric(df_s['id_prestador'], errors='coerce').fillna(0).astype(int)
     
@@ -131,9 +145,10 @@ def get_full_service_data():
     else:
         df_merged['empresa'] = '-'
 
+    # Tratamento de Strings e Datas
     df_merged['nome'] = df_merged['nome'].fillna('Desconhecido').astype(str)
     df_merged['empresa'] = df_merged['empresa'].fillna('Desconhecido').astype(str)
-
+    
     df_merged['data_vencimento'] = pd.to_datetime(df_merged['data_vencimento'], errors='coerce')
     df_merged['data_servico'] = pd.to_datetime(df_merged['data_servico'], errors='coerce')
     df_merged['valor'] = pd.to_numeric(df_merged['valor'], errors='coerce').fillna(0.0)
@@ -150,7 +165,7 @@ def generic_management_ui(category_name, sheet_name, display_col):
     state_key = f'edit_{sheet_name}_id'
     id_col = f'id_{sheet_name}'
     
-    # LISTA
+    # MODO LISTA
     if st.session_state[state_key] is None:
         if st.button(f"➕ Novo {category_name}"):
             st.session_state[state_key] = 'NEW'
@@ -161,13 +176,14 @@ def generic_management_ui(category_name, sheet_name, display_col):
             st.info("Nenhum registro.")
         else:
             for _, row in df.iterrows():
+                # Layout de colunas seguro
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
                 val_display = str(row.get(display_col, 'Sem Nome'))
                 c1.write(f"**{val_display}**")
                 
                 sid = int(row.get(id_col, 0))
                 
-                # CHAVES ÚNICAS PARA EVITAR NOTFOUNDERROR
+                # Chaves únicas para evitar NodeError
                 if c2.button("✏️", key=f"btn_edit_{sheet_name}_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
@@ -175,9 +191,10 @@ def generic_management_ui(category_name, sheet_name, display_col):
                 if c3.button("🗑️", key=f"btn_del_{sheet_name}_{sid}"):
                     execute_crud_operation(sheet_name, id_value=sid, operation='delete')
                     st.success("Excluído!")
-                    time.sleep(1)
+                    time.sleep(1) # Aguarda propagação
                     st.rerun()
-    # FORMULÁRIO
+    
+    # MODO FORMULÁRIO
     else:
         df = get_sheet_data(sheet_name)
         is_new = st.session_state[state_key] == 'NEW'
@@ -212,8 +229,10 @@ def generic_management_ui(category_name, sheet_name, display_col):
             if st.form_submit_button("Salvar"):
                 for k,v in payload.items():
                     if isinstance(v, (date, pd.Timestamp)): payload[k] = v.strftime('%Y-%m-%d')
+                
                 if is_new: execute_crud_operation(sheet_name, data=payload, operation='insert')
                 else: execute_crud_operation(sheet_name, data=payload, id_value=st.session_state[state_key], operation='update')
+                
                 st.session_state[state_key] = None
                 st.rerun()
         
@@ -225,80 +244,101 @@ def service_management_ui():
     st.subheader("Gestão de Serviços")
     state_key = 'edit_servico_id'
     
+    # Carrega dados
     df_v = get_sheet_data('veiculo')
     df_p = get_sheet_data('prestador')
     
+    # Mapeamentos para Selectbox
     map_v = {f"{r['nome']} ({r.get('placa','S/P')})": int(r['id_veiculo']) for _, r in df_v.iterrows()} if not df_v.empty else {}
     map_p = {f"{r['empresa']}": int(r['id_prestador']) for _, r in df_p.iterrows()} if not df_p.empty else {}
     
+    # LÓGICA DE LISTA
     if st.session_state[state_key] is None:
-        # Se não houver veículos, avisa. Se houver, mostra a lista (mesmo que vazia)
-        if not map_v or not map_p:
-            st.warning("⚠️ Cadastre Veículos e Prestadores antes de adicionar um serviço.")
-            # Não return aqui, deixa o código fluir para caso existam serviços órfãos (para excluir)
         
+        # Botão de Novo
         if st.button("➕ Novo Serviço"):
+            # Só bloqueia a criação se não tiver dependências
             if not map_v or not map_p:
-                st.error("Necessário cadastrar Veículo e Prestador primeiro.")
+                st.error("Para cadastrar um serviço, você precisa ter pelo menos um Veículo e um Prestador.")
             else:
                 st.session_state[state_key] = 'NEW'
                 st.rerun()
+        
+        # Mostra aviso APENAS se as tabelas estiverem vazias, não ao excluir um serviço
+        if df_v.empty or df_p.empty:
+            st.warning("⚠️ Atenção: Não foram encontrados Veículos ou Prestadores. Cadastre-os para habilitar novos serviços.")
+
+        # Listagem de Serviços (independente de veículos existirem ou não)
+        df_serv = get_sheet_data('servico')
+        if not df_serv.empty:
+            if 'data_servico' in df_serv.columns:
+                df_serv['data_servico_dt'] = pd.to_datetime(df_serv['data_servico'], errors='coerce')
             
-        df = get_sheet_data('servico')
-        if not df.empty:
-            if 'data_servico' in df.columns:
-                df['data_servico_dt'] = pd.to_datetime(df['data_servico'], errors='coerce')
-            
-            for _, row in df.iterrows():
+            for _, row in df_serv.iterrows():
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
-                data_show = row['data_servico_dt'].strftime('%d/%m/%Y') if pd.notna(row.get('data_servico_dt')) else ""
-                val_display = str(row.get('nome_servico', 'Serviço'))
                 
-                c1.write(f"**{val_display}** - {data_show}")
+                data_str = ""
+                if 'data_servico_dt' in row and pd.notna(row['data_servico_dt']):
+                    data_str = row['data_servico_dt'].strftime('%d/%m/%Y')
+                
+                val_display = str(row.get('nome_servico', 'Serviço'))
+                c1.write(f"**{val_display}** - {data_str}")
+                
                 sid = int(row.get('id_servico', 0))
                 
-                # CHAVES ÚNICAS
+                # Botão Editar
                 if c2.button("✏️", key=f"btn_ed_serv_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
+                
+                # Botão Excluir
                 if c3.button("🗑️", key=f"btn_del_serv_{sid}"):
                     execute_crud_operation('servico', id_value=sid, operation='delete')
-                    st.success("Excluído!")
+                    st.success("Serviço excluído!")
                     time.sleep(1)
                     st.rerun()
         else:
-            st.info("Nenhum serviço.")
+            st.info("Nenhum serviço cadastrado.")
 
+    # LÓGICA DE FORMULÁRIO
     else:
-        # MODO FORMULÁRIO SERVIÇO
-        df = get_sheet_data('servico')
+        df_serv = get_sheet_data('servico')
         is_new = st.session_state[state_key] == 'NEW'
         curr = {}
         current_id_v = 0
         current_id_p = 0
         
         if not is_new:
-            res = df[df['id_servico'] == st.session_state[state_key]]
+            res = df_serv[df_serv['id_servico'] == st.session_state[state_key]]
             if not res.empty:
                 curr = res.iloc[0].to_dict()
                 current_id_v = int(curr.get('id_veiculo', 0))
                 current_id_p = int(curr.get('id_prestador', 0))
 
         with st.form("form_servico_especial"):
-            # Safe index finding
-            idx_v = list(map_v.values()).index(current_id_v) if current_id_v in map_v.values() else 0
-            idx_p = list(map_p.values()).index(current_id_p) if current_id_p in map_p.values() else 0
+            # Tenta encontrar índice atual no selectbox
+            idx_v = 0
+            if current_id_v in map_v.values():
+                idx_v = list(map_v.values()).index(current_id_v)
+                
+            idx_p = 0
+            if current_id_p in map_p.values():
+                idx_p = list(map_p.values()).index(current_id_p)
             
-            sel_v_name = st.selectbox("Veículo", options=list(map_v.keys()), index=idx_v)
-            sel_p_name = st.selectbox("Prestador", options=list(map_p.keys()), index=idx_p)
+            # Se não houver itens nos mapas (apagados), evita erro no selectbox
+            opts_v = list(map_v.keys()) if map_v else ["Nenhum Veículo"]
+            opts_p = list(map_p.keys()) if map_p else ["Nenhum Prestador"]
+            
+            sel_v_name = st.selectbox("Veículo", options=opts_v, index=min(idx_v, len(opts_v)-1))
+            sel_p_name = st.selectbox("Prestador", options=opts_p, index=min(idx_p, len(opts_p)-1))
             
             nome_s = st.text_input("Nome do Serviço", value=curr.get('nome_servico', ''))
             
             c_dt, c_gr = st.columns(2)
-            try: dt_val = pd.to_datetime(curr.get('data_servico')) if curr.get('data_servico') else date.today()
-            except: dt_val = date.today()
+            try: d_val = pd.to_datetime(curr.get('data_servico')) if curr.get('data_servico') else date.today()
+            except: d_val = date.today()
             
-            data_s = c_dt.date_input("Data Serviço", value=dt_val, format="DD/MM/YYYY")
+            data_s = c_dt.date_input("Data Serviço", value=d_val, format="DD/MM/YYYY")
             garantia = c_gr.number_input("Garantia (dias)", value=int(curr.get('garantia_dias', 90)))
             
             c_val, c_km = st.columns(2)
@@ -311,27 +351,30 @@ def service_management_ui():
             registro = st.text_input("Nota/Registro", value=curr.get('registro', ''))
             
             if st.form_submit_button("Salvar Serviço"):
-                dt_venc = data_s + timedelta(days=int(garantia))
-                
-                payload = {
-                    'id_veiculo': map_v.get(sel_v_name, 0),
-                    'id_prestador': map_p.get(sel_p_name, 0),
-                    'nome_servico': nome_s,
-                    'data_servico': data_s.strftime('%Y-%m-%d'),
-                    'garantia_dias': int(garantia),
-                    'valor': float(valor),
-                    'km_realizado': int(km_r),
-                    'registro': registro,
-                    'data_vencimento': dt_venc.strftime('%Y-%m-%d')
-                }
-                
-                if is_new: execute_crud_operation('servico', data=payload, operation='insert')
-                else: execute_crud_operation('servico', data=payload, id_value=st.session_state[state_key], operation='update')
-                
-                st.session_state[state_key] = None
-                st.success("Serviço salvo!")
-                time.sleep(1)
-                st.rerun()
+                # Validação básica
+                if not map_v or not map_p:
+                    st.error("Impossível salvar sem Veículo e Prestador cadastrados.")
+                else:
+                    dt_venc = data_s + timedelta(days=int(garantia))
+                    payload = {
+                        'id_veiculo': map_v.get(sel_v_name, 0),
+                        'id_prestador': map_p.get(sel_p_name, 0),
+                        'nome_servico': nome_s,
+                        'data_servico': data_s.strftime('%Y-%m-%d'),
+                        'garantia_dias': int(garantia),
+                        'valor': float(valor),
+                        'km_realizado': int(km_r),
+                        'registro': registro,
+                        'data_vencimento': dt_venc.strftime('%Y-%m-%d')
+                    }
+                    
+                    if is_new: execute_crud_operation('servico', data=payload, operation='insert')
+                    else: execute_crud_operation('servico', data=payload, id_value=st.session_state[state_key], operation='update')
+                    
+                    st.session_state[state_key] = None
+                    st.success("Serviço salvo!")
+                    time.sleep(1)
+                    st.rerun()
 
         if st.button("Cancelar"):
             st.session_state[state_key] = None
@@ -347,25 +390,13 @@ def run_auto_test_data():
     execute_crud_operation('prestador', data={'empresa': 'Oficina Master', 'telefone': 1199999, 'cnpj': '00.000/0001-00'}, operation='insert')
     time.sleep(1.5)
     
-    # Busca com retry embutido no get_sheet_data
-    df_v = get_sheet_data('veiculo')
-    df_p = get_sheet_data('prestador')
+    df_v = get_data('veiculo', 'placa', 'TST-0001')
+    df_p = get_data('prestador', 'empresa', 'Oficina Master')
     
-    # Filtra localmente
-    id_v = 0
-    id_p = 0
-    if not df_v.empty:
-        res = df_v[df_v['placa'] == 'TST-0001']
-        if not res.empty: id_v = int(res.iloc[0]['id_veiculo'])
-        
-    if not df_p.empty:
-        res = df_p[df_p['cnpj'] == '00.000/0001-00']
-        if not res.empty: id_p = int(res.iloc[0]['id_prestador'])
-    
-    if id_v > 0 and id_p > 0:
+    if not df_v.empty and not df_p.empty:
         execute_crud_operation('servico', data={
-            'id_veiculo': id_v, 
-            'id_prestador': id_p,
+            'id_veiculo': int(df_v.iloc[0]['id_veiculo']), 
+            'id_prestador': int(df_p.iloc[0]['id_prestador']),
             'nome_servico': 'Revisão Teste', 'data_servico': date.today().strftime('%Y-%m-%d'),
             'garantia_dias': 180, 'valor': 500.0, 'km_realizado': 10000, 'registro': 'TEST-99', 
             'data_vencimento': (date.today() + timedelta(days=180)).strftime('%Y-%m-%d')
