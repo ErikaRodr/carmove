@@ -29,25 +29,41 @@ def get_gspread_client():
         st.error(f"Erro de autenticação: {e}")
         st.stop()
 
-@st.cache_data(ttl=2)
+@st.cache_data(ttl=0) # TTL 0 para forçar validação sempre que limparmos o cache
 def get_sheet_data(sheet_name):
-    try:
-        gc = get_gspread_client()
-        sh = gc.open_by_key(SHEET_ID) if SHEET_ID else gc.open(PLANILHA_TITULO)
-        worksheet = sh.worksheet(sheet_name)
-        data = worksheet.get_all_records()
-        df = pd.DataFrame(data)
-        
-        if df.empty:
-            return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
+    """
+    Lê os dados com tentativas automáticas (Retry) para evitar erros de leitura
+    após operações de escrita/exclusão.
+    """
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            gc = get_gspread_client()
+            sh = gc.open_by_key(SHEET_ID) if SHEET_ID else gc.open(PLANILHA_TITULO)
+            worksheet = sh.worksheet(sheet_name)
+            data = worksheet.get_all_records()
+            df = pd.DataFrame(data)
+            
+            # Se vazio, retorna DataFrame com colunas esperadas
+            if df.empty:
+                return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
-        id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
-        if id_col in df.columns:
-            df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
-        
-        return df
-    except Exception:
-        return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
+            id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
+            if id_col in df.columns:
+                df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
+            
+            return df
+            
+        except Exception as e:
+            # Se for a última tentativa, retorna vazio para não quebrar o app
+            if attempt == max_retries - 1:
+                # Opcional: st.warning(f"Erro ao ler {sheet_name}: {e}")
+                return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
+            # Se falhou, espera um pouquinho e tenta de novo
+            time.sleep(1)
+
+    return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
 def get_data(sheet_name, filter_col=None, filter_value=None):
     df = get_sheet_data(sheet_name)
@@ -78,6 +94,8 @@ def write_sheet_data(sheet_name, df_new):
         
         worksheet.clear()
         worksheet.update('A1', [df_save.columns.tolist()] + df_save.values.tolist(), value_input_option='USER_ENTERED')
+        
+        # Limpa o cache para garantir que a próxima leitura pegue os dados novos
         get_sheet_data.clear()
         return True
     except Exception as e:
@@ -112,41 +130,41 @@ def execute_crud_operation(sheet_name, data=None, id_value=None, operation='inse
         return write_sheet_data(sheet_name, df_updated)
 
 # ==============================================================================
-# 3. LÓGICA DE VALIDAÇÃO DE EXCLUSÃO (NOVO) 🟢
+# 3. VALIDAÇÃO DE EXCLUSÃO (Safe Delete)
 # ==============================================================================
 
 def safe_delete_logic(sheet_name, id_value, display_name):
     """
-    Verifica se o registro existe e se tem dependências antes de excluir.
-    Retorna True se deletou, False se houve erro.
+    Verifica dependências e executa a exclusão com segurança e refresh correto.
     """
-    # 1. Verifica se o registro ainda existe (Evita erro de 'Não encontrado')
+    # 1. Checa se registro existe
     df_current = get_sheet_data(sheet_name)
     id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
     
+    # Se a tabela estiver vazia ou o ID não existir
     if df_current.empty or int(id_value) not in df_current[id_col].values:
-        st.error(f"❌ Erro: O registro '{display_name}' não foi encontrado na base de dados (talvez já tenha sido excluído).")
+        st.warning(f"O registro '{display_name}' já parece ter sido excluído. Atualizando...")
+        get_sheet_data.clear() # Limpa cache só pra garantir
+        time.sleep(1)
+        st.rerun()
         return False
 
-    # 2. Verifica dependências (Chave Estrangeira)
+    # 2. Checa dependências (FK)
     if sheet_name in ['veiculo', 'prestador']:
         df_servicos = get_sheet_data('servico')
         if not df_servicos.empty:
             fk_col = 'id_veiculo' if sheet_name == 'veiculo' else 'id_prestador'
-            
-            # Garante que a coluna de FK é int
             if fk_col in df_servicos.columns:
                 df_servicos[fk_col] = pd.to_numeric(df_servicos[fk_col], errors='coerce').fillna(0).astype(int)
-                
-                # Se encontrar o ID na tabela de serviços, bloqueia
                 if int(id_value) in df_servicos[fk_col].values:
                     tipo = "Veículo" if sheet_name == 'veiculo' else "Prestador"
-                    st.warning(f"⚠️ Não é possível excluir: Este {tipo} possui serviços vinculados no Histórico. Exclua os serviços primeiro.")
+                    st.error(f"⚠️ Não é possível excluir: Este {tipo} possui serviços vinculados. Exclua os serviços primeiro.")
                     return False
 
-    # 3. Se passou nas validações, executa
-    execute_crud_operation(sheet_name, id_value=id_value, operation='delete')
-    return True
+    # 3. Executa exclusão
+    if execute_crud_operation(sheet_name, id_value=id_value, operation='delete'):
+        return True
+    return False
 
 # ==============================================================================
 # 4. RELATÓRIOS (JOIN)
@@ -192,7 +210,6 @@ def generic_management_ui(category_name, sheet_name, display_col):
     state_key = f'edit_{sheet_name}_id'
     id_col = f'id_{sheet_name}'
     
-    # Lista
     if st.session_state[state_key] is None:
         if st.button(f"➕ Novo {category_name}"):
             st.session_state[state_key] = 'NEW'
@@ -200,7 +217,7 @@ def generic_management_ui(category_name, sheet_name, display_col):
         
         df = get_sheet_data(sheet_name)
         if df.empty:
-            st.info("Nenhum registro.")
+            st.info("Nenhum registro encontrado.")
         else:
             for _, row in df.iterrows():
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
@@ -212,13 +229,12 @@ def generic_management_ui(category_name, sheet_name, display_col):
                     st.session_state[state_key] = sid
                     st.rerun()
                 
-                # 🟢 BOTÃO DE EXCLUSÃO SEGURA
                 if c3.button("🗑️", key=f"del_{sid}"):
                     if safe_delete_logic(sheet_name, sid, val_display):
                         st.success(f"{category_name} excluído!")
-                        time.sleep(1)
+                        time.sleep(1.5) # Tempo maior para o Google Sheets processar
                         st.rerun()
-    # Formulário
+
     else:
         df = get_sheet_data(sheet_name)
         is_new = st.session_state[state_key] == 'NEW'
@@ -297,11 +313,10 @@ def service_management_ui():
                     st.session_state[state_key] = sid
                     st.rerun()
                     
-                # 🟢 BOTÃO DE EXCLUSÃO SEGURA (SERVIÇO)
                 if c3.button("🗑️", key=f"del_s_{sid}"):
                     if safe_delete_logic('servico', sid, val_display):
                         st.success("Serviço excluído!")
-                        time.sleep(1)
+                        time.sleep(1.5)
                         st.rerun()
         else:
             st.info("Nenhum serviço.")
