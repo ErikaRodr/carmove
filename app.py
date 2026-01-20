@@ -31,7 +31,7 @@ def get_gspread_client():
 
 @st.cache_data(ttl=0)
 def get_sheet_data(sheet_name):
-    # Tenta ler até 3 vezes para evitar erros de API ou leitura vazia falsa
+    # Tenta ler 3 vezes para evitar falso negativo (tabela vazia por erro de rede)
     for _ in range(3):
         try:
             gc = get_gspread_client()
@@ -49,7 +49,7 @@ def get_sheet_data(sheet_name):
             
             return df
         except Exception:
-            time.sleep(0.5) 
+            time.sleep(0.5)
             
     return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
@@ -83,7 +83,7 @@ def write_sheet_data(sheet_name, df_new):
         worksheet.clear()
         worksheet.update('A1', [df_save.columns.tolist()] + df_save.values.tolist(), value_input_option='USER_ENTERED')
         
-        # Limpa cache imediatamente
+        # Limpa o cache para garantir que a próxima leitura venha atualizada
         get_sheet_data.clear()
         return True
     except Exception as e:
@@ -114,7 +114,6 @@ def execute_crud_operation(sheet_name, data=None, id_value=None, operation='inse
         return False
 
     elif operation == 'delete':
-        # Exclusão direta sem verificação de dependência (solicitado pelo usuário)
         df_updated = df[df[id_col] != int(id_value)]
         return write_sheet_data(sheet_name, df_updated)
 
@@ -145,10 +144,9 @@ def get_full_service_data():
     else:
         df_merged['empresa'] = '-'
 
-    # Tratamento de Strings e Datas
     df_merged['nome'] = df_merged['nome'].fillna('Desconhecido').astype(str)
     df_merged['empresa'] = df_merged['empresa'].fillna('Desconhecido').astype(str)
-    
+
     df_merged['data_vencimento'] = pd.to_datetime(df_merged['data_vencimento'], errors='coerce')
     df_merged['data_servico'] = pd.to_datetime(df_merged['data_servico'], errors='coerce')
     df_merged['valor'] = pd.to_numeric(df_merged['valor'], errors='coerce').fillna(0.0)
@@ -165,7 +163,7 @@ def generic_management_ui(category_name, sheet_name, display_col):
     state_key = f'edit_{sheet_name}_id'
     id_col = f'id_{sheet_name}'
     
-    # MODO LISTA
+    # LISTA
     if st.session_state[state_key] is None:
         if st.button(f"➕ Novo {category_name}"):
             st.session_state[state_key] = 'NEW'
@@ -176,25 +174,23 @@ def generic_management_ui(category_name, sheet_name, display_col):
             st.info("Nenhum registro.")
         else:
             for _, row in df.iterrows():
-                # Layout de colunas seguro
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
                 val_display = str(row.get(display_col, 'Sem Nome'))
                 c1.write(f"**{val_display}**")
                 
                 sid = int(row.get(id_col, 0))
                 
-                # Chaves únicas para evitar NodeError
+                # CHAVES ÚNICAS: Evita o erro 'Node'
                 if c2.button("✏️", key=f"btn_edit_{sheet_name}_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
                 
                 if c3.button("🗑️", key=f"btn_del_{sheet_name}_{sid}"):
                     execute_crud_operation(sheet_name, id_value=sid, operation='delete')
-                    st.success("Excluído!")
-                    time.sleep(1) # Aguarda propagação
+                    st.success("Excluído com sucesso!")
+                    time.sleep(1) # Delay essencial para o Google Sheets processar
                     st.rerun()
-    
-    # MODO FORMULÁRIO
+    # FORMULÁRIO
     else:
         df = get_sheet_data(sheet_name)
         is_new = st.session_state[state_key] == 'NEW'
@@ -229,10 +225,8 @@ def generic_management_ui(category_name, sheet_name, display_col):
             if st.form_submit_button("Salvar"):
                 for k,v in payload.items():
                     if isinstance(v, (date, pd.Timestamp)): payload[k] = v.strftime('%Y-%m-%d')
-                
                 if is_new: execute_crud_operation(sheet_name, data=payload, operation='insert')
                 else: execute_crud_operation(sheet_name, data=payload, id_value=st.session_state[state_key], operation='update')
-                
                 st.session_state[state_key] = None
                 st.rerun()
         
@@ -244,32 +238,26 @@ def service_management_ui():
     st.subheader("Gestão de Serviços")
     state_key = 'edit_servico_id'
     
-    # Carrega dados
+    # Carrega tabelas auxiliares
     df_v = get_sheet_data('veiculo')
     df_p = get_sheet_data('prestador')
     
-    # Mapeamentos para Selectbox
     map_v = {f"{r['nome']} ({r.get('placa','S/P')})": int(r['id_veiculo']) for _, r in df_v.iterrows()} if not df_v.empty else {}
     map_p = {f"{r['empresa']}": int(r['id_prestador']) for _, r in df_p.iterrows()} if not df_p.empty else {}
     
-    # LÓGICA DE LISTA
     if st.session_state[state_key] is None:
         
-        # Botão de Novo
+        # Botão de Novo Serviço
         if st.button("➕ Novo Serviço"):
-            # Só bloqueia a criação se não tiver dependências
             if not map_v or not map_p:
-                st.error("Para cadastrar um serviço, você precisa ter pelo menos um Veículo e um Prestador.")
+                st.error("Para criar um novo serviço, cadastre antes um Veículo e um Prestador.")
             else:
                 st.session_state[state_key] = 'NEW'
                 st.rerun()
         
-        # Mostra aviso APENAS se as tabelas estiverem vazias, não ao excluir um serviço
-        if df_v.empty or df_p.empty:
-            st.warning("⚠️ Atenção: Não foram encontrados Veículos ou Prestadores. Cadastre-os para habilitar novos serviços.")
-
-        # Listagem de Serviços (independente de veículos existirem ou não)
+        # Lista de Serviços Existentes (independente se as tabelas auxiliares carregaram ou não)
         df_serv = get_sheet_data('servico')
+        
         if not df_serv.empty:
             if 'data_servico' in df_serv.columns:
                 df_serv['data_servico_dt'] = pd.to_datetime(df_serv['data_servico'], errors='coerce')
@@ -286,21 +274,24 @@ def service_management_ui():
                 
                 sid = int(row.get('id_servico', 0))
                 
-                # Botão Editar
+                # CHAVES ÚNICAS PARA CADA BOTÃO (CORREÇÃO DO NODE ERROR)
                 if c2.button("✏️", key=f"btn_ed_serv_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
                 
-                # Botão Excluir
                 if c3.button("🗑️", key=f"btn_del_serv_{sid}"):
                     execute_crud_operation('servico', id_value=sid, operation='delete')
-                    st.success("Serviço excluído!")
-                    time.sleep(1)
+                    st.success("Excluído!")
+                    time.sleep(1.5) # Tempo extra para o Google Sheets não retornar dados velhos
                     st.rerun()
         else:
-            st.info("Nenhum serviço cadastrado.")
+            st.info("Nenhum serviço registrado.")
 
-    # LÓGICA DE FORMULÁRIO
+        # Aviso no rodapé apenas se REALMENTE não houver veículos/prestadores
+        if (df_v.empty or df_p.empty) and df_serv.empty:
+             st.warning("⚠️ Dica: Cadastre Veículos e Prestadores para começar.")
+
+    # MODO FORMULÁRIO SERVIÇO
     else:
         df_serv = get_sheet_data('servico')
         is_new = st.session_state[state_key] == 'NEW'
@@ -316,18 +307,17 @@ def service_management_ui():
                 current_id_p = int(curr.get('id_prestador', 0))
 
         with st.form("form_servico_especial"):
-            # Tenta encontrar índice atual no selectbox
+            # Lógica segura para selecionar o índice
             idx_v = 0
             if current_id_v in map_v.values():
                 idx_v = list(map_v.values()).index(current_id_v)
-                
+            
             idx_p = 0
             if current_id_p in map_p.values():
                 idx_p = list(map_p.values()).index(current_id_p)
             
-            # Se não houver itens nos mapas (apagados), evita erro no selectbox
-            opts_v = list(map_v.keys()) if map_v else ["Nenhum Veículo"]
-            opts_p = list(map_p.keys()) if map_p else ["Nenhum Prestador"]
+            opts_v = list(map_v.keys()) if map_v else ["Sem Veículos"]
+            opts_p = list(map_p.keys()) if map_p else ["Sem Prestadores"]
             
             sel_v_name = st.selectbox("Veículo", options=opts_v, index=min(idx_v, len(opts_v)-1))
             sel_p_name = st.selectbox("Prestador", options=opts_p, index=min(idx_p, len(opts_p)-1))
@@ -335,10 +325,10 @@ def service_management_ui():
             nome_s = st.text_input("Nome do Serviço", value=curr.get('nome_servico', ''))
             
             c_dt, c_gr = st.columns(2)
-            try: d_val = pd.to_datetime(curr.get('data_servico')) if curr.get('data_servico') else date.today()
-            except: d_val = date.today()
+            try: dt_val = pd.to_datetime(curr.get('data_servico')) if curr.get('data_servico') else date.today()
+            except: dt_val = date.today()
             
-            data_s = c_dt.date_input("Data Serviço", value=d_val, format="DD/MM/YYYY")
+            data_s = c_dt.date_input("Data Serviço", value=dt_val, format="DD/MM/YYYY")
             garantia = c_gr.number_input("Garantia (dias)", value=int(curr.get('garantia_dias', 90)))
             
             c_val, c_km = st.columns(2)
@@ -351,9 +341,8 @@ def service_management_ui():
             registro = st.text_input("Nota/Registro", value=curr.get('registro', ''))
             
             if st.form_submit_button("Salvar Serviço"):
-                # Validação básica
                 if not map_v or not map_p:
-                    st.error("Impossível salvar sem Veículo e Prestador cadastrados.")
+                    st.error("Impossível salvar. Verifique cadastros de Veículo/Prestador.")
                 else:
                     dt_venc = data_s + timedelta(days=int(garantia))
                     payload = {
@@ -431,6 +420,7 @@ def main():
             anos_disponiveis = sorted(df_full['Ano'].dropna().unique().astype(int).tolist(), reverse=True)
             sel_ano = c_filt1.selectbox("Filtrar por Ano", ["Todos"] + anos_disponiveis)
             
+            # Conversão para string evita TypeError
             veiculos_disp = sorted(df_full['nome'].astype(str).unique().tolist())
             sel_veiculo = c_filt2.selectbox("Filtrar por Veículo", ["Todos"] + veiculos_disp)
             
@@ -499,6 +489,7 @@ def main():
             st.info("Histórico vazio.")
 
     with tab_manual:
+        # CORREÇÃO DO NOME 'se' -> 'Serviço'
         opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True)
         st.divider()
         if opcao == "Veículo": generic_management_ui("Veículo", "veiculo", "nome")
