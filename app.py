@@ -29,41 +29,25 @@ def get_gspread_client():
         st.error(f"Erro de autenticação: {e}")
         st.stop()
 
-@st.cache_data(ttl=0) # TTL 0 para forçar validação sempre que limparmos o cache
+@st.cache_data(ttl=2)
 def get_sheet_data(sheet_name):
-    """
-    Lê os dados com tentativas automáticas (Retry) para evitar erros de leitura
-    após operações de escrita/exclusão.
-    """
-    max_retries = 3
-    
-    for attempt in range(max_retries):
-        try:
-            gc = get_gspread_client()
-            sh = gc.open_by_key(SHEET_ID) if SHEET_ID else gc.open(PLANILHA_TITULO)
-            worksheet = sh.worksheet(sheet_name)
-            data = worksheet.get_all_records()
-            df = pd.DataFrame(data)
-            
-            # Se vazio, retorna DataFrame com colunas esperadas
-            if df.empty:
-                return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
+    try:
+        gc = get_gspread_client()
+        sh = gc.open_by_key(SHEET_ID) if SHEET_ID else gc.open(PLANILHA_TITULO)
+        worksheet = sh.worksheet(sheet_name)
+        data = worksheet.get_all_records()
+        df = pd.DataFrame(data)
+        
+        if df.empty:
+            return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
-            id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
-            if id_col in df.columns:
-                df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
-            
-            return df
-            
-        except Exception as e:
-            # Se for a última tentativa, retorna vazio para não quebrar o app
-            if attempt == max_retries - 1:
-                # Opcional: st.warning(f"Erro ao ler {sheet_name}: {e}")
-                return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
-            # Se falhou, espera um pouquinho e tenta de novo
-            time.sleep(1)
-
-    return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
+        id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
+        if id_col in df.columns:
+            df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
+        
+        return df
+    except Exception:
+        return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
 def get_data(sheet_name, filter_col=None, filter_value=None):
     df = get_sheet_data(sheet_name)
@@ -86,6 +70,7 @@ def write_sheet_data(sheet_name, df_new):
         worksheet = sh.worksheet(sheet_name)
         
         df_save = df_new.copy()
+        
         for col in df_save.select_dtypes(include=['datetime64']).columns:
             df_save[col] = df_save[col].dt.strftime('%Y-%m-%d')
             
@@ -94,8 +79,6 @@ def write_sheet_data(sheet_name, df_new):
         
         worksheet.clear()
         worksheet.update('A1', [df_save.columns.tolist()] + df_save.values.tolist(), value_input_option='USER_ENTERED')
-        
-        # Limpa o cache para garantir que a próxima leitura pegue os dados novos
         get_sheet_data.clear()
         return True
     except Exception as e:
@@ -130,44 +113,7 @@ def execute_crud_operation(sheet_name, data=None, id_value=None, operation='inse
         return write_sheet_data(sheet_name, df_updated)
 
 # ==============================================================================
-# 3. VALIDAÇÃO DE EXCLUSÃO (Safe Delete)
-# ==============================================================================
-
-def safe_delete_logic(sheet_name, id_value, display_name):
-    """
-    Verifica dependências e executa a exclusão com segurança e refresh correto.
-    """
-    # 1. Checa se registro existe
-    df_current = get_sheet_data(sheet_name)
-    id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
-    
-    # Se a tabela estiver vazia ou o ID não existir
-    if df_current.empty or int(id_value) not in df_current[id_col].values:
-        st.warning(f"O registro '{display_name}' já parece ter sido excluído. Atualizando...")
-        get_sheet_data.clear() # Limpa cache só pra garantir
-        time.sleep(1)
-        st.rerun()
-        return False
-
-    # 2. Checa dependências (FK)
-    if sheet_name in ['veiculo', 'prestador']:
-        df_servicos = get_sheet_data('servico')
-        if not df_servicos.empty:
-            fk_col = 'id_veiculo' if sheet_name == 'veiculo' else 'id_prestador'
-            if fk_col in df_servicos.columns:
-                df_servicos[fk_col] = pd.to_numeric(df_servicos[fk_col], errors='coerce').fillna(0).astype(int)
-                if int(id_value) in df_servicos[fk_col].values:
-                    tipo = "Veículo" if sheet_name == 'veiculo' else "Prestador"
-                    st.error(f"⚠️ Não é possível excluir: Este {tipo} possui serviços vinculados. Exclua os serviços primeiro.")
-                    return False
-
-    # 3. Executa exclusão
-    if execute_crud_operation(sheet_name, id_value=id_value, operation='delete'):
-        return True
-    return False
-
-# ==============================================================================
-# 4. RELATÓRIOS (JOIN)
+# 3. RELATÓRIOS (JOIN)
 # ==============================================================================
 
 def get_full_service_data():
@@ -202,7 +148,7 @@ def get_full_service_data():
     return df_merged.sort_values(by='data_servico', ascending=False)
 
 # ==============================================================================
-# 5. INTERFACES DE GESTÃO (UI)
+# 4. INTERFACES DE GESTÃO (UI)
 # ==============================================================================
 
 def generic_management_ui(category_name, sheet_name, display_col):
@@ -217,24 +163,18 @@ def generic_management_ui(category_name, sheet_name, display_col):
         
         df = get_sheet_data(sheet_name)
         if df.empty:
-            st.info("Nenhum registro encontrado.")
+            st.info("Nenhum registro.")
         else:
             for _, row in df.iterrows():
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
-                val_display = str(row.get(display_col, 'Sem Nome'))
-                c1.write(f"**{val_display}**")
-                
+                c1.write(f"**{row.get(display_col)}**")
                 sid = int(row.get(id_col, 0))
                 if c2.button("✏️", key=f"ed_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
-                
                 if c3.button("🗑️", key=f"del_{sid}"):
-                    if safe_delete_logic(sheet_name, sid, val_display):
-                        st.success(f"{category_name} excluído!")
-                        time.sleep(1.5) # Tempo maior para o Google Sheets processar
-                        st.rerun()
-
+                    execute_crud_operation(sheet_name, id_value=sid, operation='delete')
+                    st.rerun()
     else:
         df = get_sheet_data(sheet_name)
         is_new = st.session_state[state_key] == 'NEW'
@@ -305,19 +245,15 @@ def service_management_ui():
             for _, row in df.iterrows():
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
                 data_show = row['data_servico_dt'].strftime('%d/%m/%Y') if pd.notna(row.get('data_servico_dt')) else ""
-                val_display = row.get('nome_servico')
                 
-                c1.write(f"**{val_display}** - {data_show}")
+                c1.write(f"**{row.get('nome_servico')}** - {data_show}")
                 sid = int(row.get('id_servico', 0))
                 if c2.button("✏️", key=f"ed_s_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
-                    
                 if c3.button("🗑️", key=f"del_s_{sid}"):
-                    if safe_delete_logic('servico', sid, val_display):
-                        st.success("Serviço excluído!")
-                        time.sleep(1.5)
-                        st.rerun()
+                    execute_crud_operation('servico', id_value=sid, operation='delete')
+                    st.rerun()
         else:
             st.info("Nenhum serviço.")
 
@@ -388,7 +324,7 @@ def service_management_ui():
             st.rerun()
 
 # ==============================================================================
-# 6. SIMULAÇÃO E MAIN
+# 5. SIMULAÇÃO E MAIN
 # ==============================================================================
 
 def run_auto_test_data():
@@ -469,10 +405,11 @@ def main():
                 st.altair_chart((barras + rotulos).properties(height=400).interactive(), use_container_width=True)
             else:
                 st.warning("Nenhum dado encontrado.")
+                
         else:
             st.info("Sem dados de serviço.")
 
-    # ABA HISTÓRICO
+    # 🟢 ABA HISTÓRICO: FILTRO DUPLO (ANO + VEÍCULO)
     with tab_hist:
         df_full = get_full_service_data()
         if not df_full.empty:
@@ -481,18 +418,22 @@ def main():
             st.subheader("Filtros")
             c_hf1, c_hf2 = st.columns(2)
             
+            # Filtro Veículo
             v_list = ["Todos"] + sorted(list(df_full['nome'].unique()))
             v_sel = c_hf1.selectbox("Veículo:", v_list, key="hist_veiculo")
             
+            # Filtro Ano
             years_list = ["Todos"] + sorted(list(df_full['Ano'].unique().astype(int)), reverse=True)
             y_sel = c_hf2.selectbox("Ano:", years_list, key="hist_ano")
             
+            # Aplica Filtros
             df_hist_final = df_full.copy()
             if v_sel != "Todos":
                 df_hist_final = df_hist_final[df_hist_final['nome'] == v_sel]
             if y_sel != "Todos":
                 df_hist_final = df_hist_final[df_hist_final['Ano'] == y_sel]
 
+            # Exibição
             cols = ['nome', 'placa', 'nome_servico', 'empresa', 'data_servico', 'valor', 'Dias p/ Vencer']
             df_display = df_hist_final[cols].copy()
             if 'data_servico' in df_display.columns:
@@ -501,7 +442,7 @@ def main():
             if not df_display.empty:
                 st.dataframe(df_display, use_container_width=True)
             else:
-                st.warning("Nenhum registro encontrado.")
+                st.warning("Nenhum registro encontrado para este filtro.")
         else:
             st.info("Histórico vazio.")
 
