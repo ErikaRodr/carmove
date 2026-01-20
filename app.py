@@ -31,7 +31,7 @@ def get_gspread_client():
 
 @st.cache_data(ttl=0)
 def get_sheet_data(sheet_name):
-    # Tenta ler 3 vezes em caso de erro momentâneo do Google
+    # Tenta ler 3 vezes para garantir que não venha vazio por erro de rede
     for _ in range(3):
         try:
             gc = get_gspread_client()
@@ -46,25 +46,12 @@ def get_sheet_data(sheet_name):
             id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
             if id_col in df.columns:
                 df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
+            
             return df
         except Exception:
-            time.sleep(1)
+            time.sleep(1) # Espera 1 segundo e tenta de novo
             
     return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
-
-def get_data(sheet_name, filter_col=None, filter_value=None):
-    df = get_sheet_data(sheet_name)
-    if df.empty: return df
-    
-    if filter_col and filter_value is not None:
-        try:
-            if str(filter_col).startswith('id_'):
-                df[filter_col] = pd.to_numeric(df[filter_col], errors='coerce').fillna(0).astype(int)
-                filter_value = int(filter_value)
-            return df[df[filter_col] == filter_value]
-        except:
-            return pd.DataFrame(columns=df.columns)
-    return df
 
 def write_sheet_data(sheet_name, df_new):
     try:
@@ -81,6 +68,8 @@ def write_sheet_data(sheet_name, df_new):
         
         worksheet.clear()
         worksheet.update('A1', [df_save.columns.tolist()] + df_save.values.tolist(), value_input_option='USER_ENTERED')
+        
+        # Limpa o cache imediatamente para atualizar a tela
         get_sheet_data.clear()
         return True
     except Exception as e:
@@ -88,38 +77,8 @@ def write_sheet_data(sheet_name, df_new):
         return False
 
 # ==============================================================================
-# 2. CRUD E VALIDAÇÕES
+# 2. CRUD (SIMPLES - SEM DEPENDÊNCIA, COM KEYS CORRIGIDAS)
 # ==============================================================================
-
-def check_dependencies(sheet_name, id_value):
-    """
-    Verifica se o item pode ser excluído.
-    Retorna (True, "") se pode excluir.
-    Retorna (False, "Mensagem de Erro") se estiver bloqueado.
-    """
-    # Se for serviço, pode apagar direto (não tem dependentes abaixo dele)
-    if sheet_name == 'servico':
-        return True, ""
-
-    # Se for Veículo ou Prestador, verifica se tem Serviços
-    df_servicos = get_sheet_data('servico')
-    
-    if df_servicos.empty:
-        return True, ""
-
-    if sheet_name == 'veiculo':
-        # Verifica se o ID do veículo aparece na tabela de serviços
-        ids_em_uso = pd.to_numeric(df_servicos['id_veiculo'], errors='coerce').fillna(0).astype(int).values
-        if int(id_value) in ids_em_uso:
-            return False, "⚠️ Não é possível excluir: Este VEÍCULO possui serviços cadastrados no histórico. Exclua os serviços primeiro."
-
-    if sheet_name == 'prestador':
-        # Verifica se o ID do prestador aparece na tabela de serviços
-        ids_em_uso = pd.to_numeric(df_servicos['id_prestador'], errors='coerce').fillna(0).astype(int).values
-        if int(id_value) in ids_em_uso:
-            return False, "⚠️ Não é possível excluir: Este PRESTADOR possui serviços cadastrados no histórico. Exclua os serviços primeiro."
-
-    return True, ""
 
 def execute_crud_operation(sheet_name, data=None, id_value=None, operation='insert'):
     df = get_sheet_data(sheet_name)
@@ -141,17 +100,11 @@ def execute_crud_operation(sheet_name, data=None, id_value=None, operation='inse
         return False
 
     elif operation == 'delete':
-        # 🟢 VALIDAÇÃO ANTES DE EXCLUIR
-        pode_excluir, mensagem_erro = check_dependencies(sheet_name, id_value)
-        if not pode_excluir:
-            st.error(mensagem_erro)
-            return False
-
         df_updated = df[df[id_col] != int(id_value)]
         return write_sheet_data(sheet_name, df_updated)
 
 # ==============================================================================
-# 3. RELATÓRIOS (JOIN) - CORRIGIDO PARA O ERRO TYPEERROR
+# 3. RELATÓRIOS (JOIN)
 # ==============================================================================
 
 def get_full_service_data():
@@ -161,6 +114,7 @@ def get_full_service_data():
 
     if df_s.empty: return pd.DataFrame()
 
+    # Conversão segura de tipos
     df_s['id_veiculo'] = pd.to_numeric(df_s['id_veiculo'], errors='coerce').fillna(0).astype(int)
     df_s['id_prestador'] = pd.to_numeric(df_s['id_prestador'], errors='coerce').fillna(0).astype(int)
     
@@ -177,20 +131,18 @@ def get_full_service_data():
     else:
         df_merged['empresa'] = '-'
 
-    # 🟢 CORREÇÃO IMPORTANTE: Preenche vazios e converte para String para evitar erro no Sort
     df_merged['nome'] = df_merged['nome'].fillna('Desconhecido').astype(str)
     df_merged['empresa'] = df_merged['empresa'].fillna('Desconhecido').astype(str)
 
     df_merged['data_vencimento'] = pd.to_datetime(df_merged['data_vencimento'], errors='coerce')
     df_merged['data_servico'] = pd.to_datetime(df_merged['data_servico'], errors='coerce')
-    
     df_merged['valor'] = pd.to_numeric(df_merged['valor'], errors='coerce').fillna(0.0)
     df_merged['Dias p/ Vencer'] = (df_merged['data_vencimento'] - pd.to_datetime(date.today())).dt.days
     
     return df_merged.sort_values(by='data_servico', ascending=False)
 
 # ==============================================================================
-# 4. INTERFACES DE GESTÃO (UI) - CORRIGIDO NOTFOUNDERROR
+# 4. INTERFACES DE GESTÃO (UI)
 # ==============================================================================
 
 def generic_management_ui(category_name, sheet_name, display_col):
@@ -215,16 +167,16 @@ def generic_management_ui(category_name, sheet_name, display_col):
                 
                 sid = int(row.get(id_col, 0))
                 
-                # 🟢 CORREÇÃO: Chaves ÚNICAS para evitar erro do Streamlit
+                # CHAVES ÚNICAS PARA EVITAR NOTFOUNDERROR
                 if c2.button("✏️", key=f"btn_edit_{sheet_name}_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
                 
                 if c3.button("🗑️", key=f"btn_del_{sheet_name}_{sid}"):
-                    if execute_crud_operation(sheet_name, id_value=sid, operation='delete'):
-                        st.success("Excluído com sucesso!")
-                        time.sleep(1) # Tempo para processar
-                        st.rerun()
+                    execute_crud_operation(sheet_name, id_value=sid, operation='delete')
+                    st.success("Excluído!")
+                    time.sleep(1)
+                    st.rerun()
     # FORMULÁRIO
     else:
         df = get_sheet_data(sheet_name)
@@ -280,13 +232,17 @@ def service_management_ui():
     map_p = {f"{r['empresa']}": int(r['id_prestador']) for _, r in df_p.iterrows()} if not df_p.empty else {}
     
     if st.session_state[state_key] is None:
+        # Se não houver veículos, avisa. Se houver, mostra a lista (mesmo que vazia)
         if not map_v or not map_p:
-            st.warning("⚠️ Cadastre Veículos e Prestadores antes.")
-            return
-
+            st.warning("⚠️ Cadastre Veículos e Prestadores antes de adicionar um serviço.")
+            # Não return aqui, deixa o código fluir para caso existam serviços órfãos (para excluir)
+        
         if st.button("➕ Novo Serviço"):
-            st.session_state[state_key] = 'NEW'
-            st.rerun()
+            if not map_v or not map_p:
+                st.error("Necessário cadastrar Veículo e Prestador primeiro.")
+            else:
+                st.session_state[state_key] = 'NEW'
+                st.rerun()
             
         df = get_sheet_data('servico')
         if not df.empty:
@@ -296,25 +252,25 @@ def service_management_ui():
             for _, row in df.iterrows():
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
                 data_show = row['data_servico_dt'].strftime('%d/%m/%Y') if pd.notna(row.get('data_servico_dt')) else ""
-                val_display = row.get('nome_servico')
+                val_display = str(row.get('nome_servico', 'Serviço'))
                 
                 c1.write(f"**{val_display}** - {data_show}")
                 sid = int(row.get('id_servico', 0))
                 
-                # Chaves únicas para evitar erro
+                # CHAVES ÚNICAS
                 if c2.button("✏️", key=f"btn_ed_serv_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
                 if c3.button("🗑️", key=f"btn_del_serv_{sid}"):
-                    # Serviços sempre podem ser excluídos
-                    if execute_crud_operation('servico', id_value=sid, operation='delete'):
-                        st.success("Excluído!")
-                        time.sleep(1)
-                        st.rerun()
+                    execute_crud_operation('servico', id_value=sid, operation='delete')
+                    st.success("Excluído!")
+                    time.sleep(1)
+                    st.rerun()
         else:
             st.info("Nenhum serviço.")
 
     else:
+        # MODO FORMULÁRIO SERVIÇO
         df = get_sheet_data('servico')
         is_new = st.session_state[state_key] == 'NEW'
         curr = {}
@@ -329,6 +285,7 @@ def service_management_ui():
                 current_id_p = int(curr.get('id_prestador', 0))
 
         with st.form("form_servico_especial"):
+            # Safe index finding
             idx_v = list(map_v.values()).index(current_id_v) if current_id_v in map_v.values() else 0
             idx_p = list(map_p.values()).index(current_id_p) if current_id_p in map_p.values() else 0
             
@@ -357,8 +314,8 @@ def service_management_ui():
                 dt_venc = data_s + timedelta(days=int(garantia))
                 
                 payload = {
-                    'id_veiculo': map_v[sel_v_name],
-                    'id_prestador': map_p[sel_p_name],
+                    'id_veiculo': map_v.get(sel_v_name, 0),
+                    'id_prestador': map_p.get(sel_p_name, 0),
                     'nome_servico': nome_s,
                     'data_servico': data_s.strftime('%Y-%m-%d'),
                     'garantia_dias': int(garantia),
@@ -390,13 +347,25 @@ def run_auto_test_data():
     execute_crud_operation('prestador', data={'empresa': 'Oficina Master', 'telefone': 1199999, 'cnpj': '00.000/0001-00'}, operation='insert')
     time.sleep(1.5)
     
-    df_v = get_data('veiculo', 'placa', 'TST-0001')
-    df_p = get_data('prestador', 'empresa', 'Oficina Master')
+    # Busca com retry embutido no get_sheet_data
+    df_v = get_sheet_data('veiculo')
+    df_p = get_sheet_data('prestador')
     
-    if not df_v.empty and not df_p.empty:
+    # Filtra localmente
+    id_v = 0
+    id_p = 0
+    if not df_v.empty:
+        res = df_v[df_v['placa'] == 'TST-0001']
+        if not res.empty: id_v = int(res.iloc[0]['id_veiculo'])
+        
+    if not df_p.empty:
+        res = df_p[df_p['cnpj'] == '00.000/0001-00']
+        if not res.empty: id_p = int(res.iloc[0]['id_prestador'])
+    
+    if id_v > 0 and id_p > 0:
         execute_crud_operation('servico', data={
-            'id_veiculo': int(df_v.iloc[0]['id_veiculo']), 
-            'id_prestador': int(df_p.iloc[0]['id_prestador']),
+            'id_veiculo': id_v, 
+            'id_prestador': id_p,
             'nome_servico': 'Revisão Teste', 'data_servico': date.today().strftime('%Y-%m-%d'),
             'garantia_dias': 180, 'valor': 500.0, 'km_realizado': 10000, 'registro': 'TEST-99', 
             'data_vencimento': (date.today() + timedelta(days=180)).strftime('%Y-%m-%d')
@@ -428,11 +397,9 @@ def main():
             st.subheader("Filtros do Dashboard")
             c_filt1, c_filt2 = st.columns(2)
             
-            # Garante lista limpa para evitar erro de ordenação
             anos_disponiveis = sorted(df_full['Ano'].dropna().unique().astype(int).tolist(), reverse=True)
             sel_ano = c_filt1.selectbox("Filtrar por Ano", ["Todos"] + anos_disponiveis)
             
-            # 🟢 CORREÇÃO TYPEERROR: Converte para string antes de ordenar
             veiculos_disp = sorted(df_full['nome'].astype(str).unique().tolist())
             sel_veiculo = c_filt2.selectbox("Filtrar por Veículo", ["Todos"] + veiculos_disp)
             
@@ -476,7 +443,6 @@ def main():
             st.subheader("Filtros")
             c_hf1, c_hf2 = st.columns(2)
             
-            # 🟢 CORREÇÃO TYPEERROR
             v_list = ["Todos"] + sorted(list(df_full['nome'].astype(str).unique()))
             v_sel = c_hf1.selectbox("Veículo:", v_list, key="hist_veiculo")
             
