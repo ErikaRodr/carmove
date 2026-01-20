@@ -70,7 +70,6 @@ def write_sheet_data(sheet_name, df_new):
         worksheet = sh.worksheet(sheet_name)
         
         df_save = df_new.copy()
-        
         for col in df_save.select_dtypes(include=['datetime64']).columns:
             df_save[col] = df_save[col].dt.strftime('%Y-%m-%d')
             
@@ -113,7 +112,44 @@ def execute_crud_operation(sheet_name, data=None, id_value=None, operation='inse
         return write_sheet_data(sheet_name, df_updated)
 
 # ==============================================================================
-# 3. RELATÓRIOS (JOIN)
+# 3. LÓGICA DE VALIDAÇÃO DE EXCLUSÃO (NOVO) 🟢
+# ==============================================================================
+
+def safe_delete_logic(sheet_name, id_value, display_name):
+    """
+    Verifica se o registro existe e se tem dependências antes de excluir.
+    Retorna True se deletou, False se houve erro.
+    """
+    # 1. Verifica se o registro ainda existe (Evita erro de 'Não encontrado')
+    df_current = get_sheet_data(sheet_name)
+    id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
+    
+    if df_current.empty or int(id_value) not in df_current[id_col].values:
+        st.error(f"❌ Erro: O registro '{display_name}' não foi encontrado na base de dados (talvez já tenha sido excluído).")
+        return False
+
+    # 2. Verifica dependências (Chave Estrangeira)
+    if sheet_name in ['veiculo', 'prestador']:
+        df_servicos = get_sheet_data('servico')
+        if not df_servicos.empty:
+            fk_col = 'id_veiculo' if sheet_name == 'veiculo' else 'id_prestador'
+            
+            # Garante que a coluna de FK é int
+            if fk_col in df_servicos.columns:
+                df_servicos[fk_col] = pd.to_numeric(df_servicos[fk_col], errors='coerce').fillna(0).astype(int)
+                
+                # Se encontrar o ID na tabela de serviços, bloqueia
+                if int(id_value) in df_servicos[fk_col].values:
+                    tipo = "Veículo" if sheet_name == 'veiculo' else "Prestador"
+                    st.warning(f"⚠️ Não é possível excluir: Este {tipo} possui serviços vinculados no Histórico. Exclua os serviços primeiro.")
+                    return False
+
+    # 3. Se passou nas validações, executa
+    execute_crud_operation(sheet_name, id_value=id_value, operation='delete')
+    return True
+
+# ==============================================================================
+# 4. RELATÓRIOS (JOIN)
 # ==============================================================================
 
 def get_full_service_data():
@@ -148,7 +184,7 @@ def get_full_service_data():
     return df_merged.sort_values(by='data_servico', ascending=False)
 
 # ==============================================================================
-# 4. INTERFACES DE GESTÃO (UI)
+# 5. INTERFACES DE GESTÃO (UI)
 # ==============================================================================
 
 def generic_management_ui(category_name, sheet_name, display_col):
@@ -156,6 +192,7 @@ def generic_management_ui(category_name, sheet_name, display_col):
     state_key = f'edit_{sheet_name}_id'
     id_col = f'id_{sheet_name}'
     
+    # Lista
     if st.session_state[state_key] is None:
         if st.button(f"➕ Novo {category_name}"):
             st.session_state[state_key] = 'NEW'
@@ -167,14 +204,21 @@ def generic_management_ui(category_name, sheet_name, display_col):
         else:
             for _, row in df.iterrows():
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
-                c1.write(f"**{row.get(display_col)}**")
+                val_display = str(row.get(display_col, 'Sem Nome'))
+                c1.write(f"**{val_display}**")
+                
                 sid = int(row.get(id_col, 0))
                 if c2.button("✏️", key=f"ed_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
+                
+                # 🟢 BOTÃO DE EXCLUSÃO SEGURA
                 if c3.button("🗑️", key=f"del_{sid}"):
-                    execute_crud_operation(sheet_name, id_value=sid, operation='delete')
-                    st.rerun()
+                    if safe_delete_logic(sheet_name, sid, val_display):
+                        st.success(f"{category_name} excluído!")
+                        time.sleep(1)
+                        st.rerun()
+    # Formulário
     else:
         df = get_sheet_data(sheet_name)
         is_new = st.session_state[state_key] == 'NEW'
@@ -245,15 +289,20 @@ def service_management_ui():
             for _, row in df.iterrows():
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
                 data_show = row['data_servico_dt'].strftime('%d/%m/%Y') if pd.notna(row.get('data_servico_dt')) else ""
+                val_display = row.get('nome_servico')
                 
-                c1.write(f"**{row.get('nome_servico')}** - {data_show}")
+                c1.write(f"**{val_display}** - {data_show}")
                 sid = int(row.get('id_servico', 0))
                 if c2.button("✏️", key=f"ed_s_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
+                    
+                # 🟢 BOTÃO DE EXCLUSÃO SEGURA (SERVIÇO)
                 if c3.button("🗑️", key=f"del_s_{sid}"):
-                    execute_crud_operation('servico', id_value=sid, operation='delete')
-                    st.rerun()
+                    if safe_delete_logic('servico', sid, val_display):
+                        st.success("Serviço excluído!")
+                        time.sleep(1)
+                        st.rerun()
         else:
             st.info("Nenhum serviço.")
 
@@ -324,7 +373,7 @@ def service_management_ui():
             st.rerun()
 
 # ==============================================================================
-# 5. SIMULAÇÃO E MAIN
+# 6. SIMULAÇÃO E MAIN
 # ==============================================================================
 
 def run_auto_test_data():
@@ -405,11 +454,10 @@ def main():
                 st.altair_chart((barras + rotulos).properties(height=400).interactive(), use_container_width=True)
             else:
                 st.warning("Nenhum dado encontrado.")
-                
         else:
             st.info("Sem dados de serviço.")
 
-    # 🟢 ABA HISTÓRICO: FILTRO DUPLO (ANO + VEÍCULO)
+    # ABA HISTÓRICO
     with tab_hist:
         df_full = get_full_service_data()
         if not df_full.empty:
@@ -418,22 +466,18 @@ def main():
             st.subheader("Filtros")
             c_hf1, c_hf2 = st.columns(2)
             
-            # Filtro Veículo
             v_list = ["Todos"] + sorted(list(df_full['nome'].unique()))
             v_sel = c_hf1.selectbox("Veículo:", v_list, key="hist_veiculo")
             
-            # Filtro Ano
             years_list = ["Todos"] + sorted(list(df_full['Ano'].unique().astype(int)), reverse=True)
             y_sel = c_hf2.selectbox("Ano:", years_list, key="hist_ano")
             
-            # Aplica Filtros
             df_hist_final = df_full.copy()
             if v_sel != "Todos":
                 df_hist_final = df_hist_final[df_hist_final['nome'] == v_sel]
             if y_sel != "Todos":
                 df_hist_final = df_hist_final[df_hist_final['Ano'] == y_sel]
 
-            # Exibição
             cols = ['nome', 'placa', 'nome_servico', 'empresa', 'data_servico', 'valor', 'Dias p/ Vencer']
             df_display = df_hist_final[cols].copy()
             if 'data_servico' in df_display.columns:
@@ -442,7 +486,7 @@ def main():
             if not df_display.empty:
                 st.dataframe(df_display, use_container_width=True)
             else:
-                st.warning("Nenhum registro encontrado para este filtro.")
+                st.warning("Nenhum registro encontrado.")
         else:
             st.info("Histórico vazio.")
 
