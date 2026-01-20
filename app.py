@@ -31,8 +31,8 @@ def get_gspread_client():
 
 @st.cache_data(ttl=0)
 def get_sheet_data(sheet_name):
-    # Tenta ler 3 vezes para evitar falso negativo (tabela vazia por erro de rede)
-    for _ in range(3):
+    # Tenta ler 5 vezes (Robustez aumentada para evitar dados sumindo)
+    for i in range(5):
         try:
             gc = get_gspread_client()
             sh = gc.open_by_key(SHEET_ID) if SHEET_ID else gc.open(PLANILHA_TITULO)
@@ -49,8 +49,9 @@ def get_sheet_data(sheet_name):
             
             return df
         except Exception:
-            time.sleep(0.5)
+            time.sleep(1) # Espera 1s antes de tentar de novo
             
+    # Se falhar 5 vezes, retorna vazio mas não quebra o app
     return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
 def get_data(sheet_name, filter_col=None, filter_value=None):
@@ -83,7 +84,7 @@ def write_sheet_data(sheet_name, df_new):
         worksheet.clear()
         worksheet.update('A1', [df_save.columns.tolist()] + df_save.values.tolist(), value_input_option='USER_ENTERED')
         
-        # Limpa o cache para garantir que a próxima leitura venha atualizada
+        # Limpa cache forçadamente
         get_sheet_data.clear()
         return True
     except Exception as e:
@@ -163,7 +164,6 @@ def generic_management_ui(category_name, sheet_name, display_col):
     state_key = f'edit_{sheet_name}_id'
     id_col = f'id_{sheet_name}'
     
-    # LISTA
     if st.session_state[state_key] is None:
         if st.button(f"➕ Novo {category_name}"):
             st.session_state[state_key] = 'NEW'
@@ -180,7 +180,7 @@ def generic_management_ui(category_name, sheet_name, display_col):
                 
                 sid = int(row.get(id_col, 0))
                 
-                # CHAVES ÚNICAS: Evita o erro 'Node'
+                # CHAVES ÚNICAS BLINDADAS
                 if c2.button("✏️", key=f"btn_edit_{sheet_name}_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
@@ -188,9 +188,8 @@ def generic_management_ui(category_name, sheet_name, display_col):
                 if c3.button("🗑️", key=f"btn_del_{sheet_name}_{sid}"):
                     execute_crud_operation(sheet_name, id_value=sid, operation='delete')
                     st.success("Excluído com sucesso!")
-                    time.sleep(1) # Delay essencial para o Google Sheets processar
+                    time.sleep(1.5)
                     st.rerun()
-    # FORMULÁRIO
     else:
         df = get_sheet_data(sheet_name)
         is_new = st.session_state[state_key] == 'NEW'
@@ -238,26 +237,27 @@ def service_management_ui():
     st.subheader("Gestão de Serviços")
     state_key = 'edit_servico_id'
     
-    # Carrega tabelas auxiliares
+    # Carrega dados
     df_v = get_sheet_data('veiculo')
     df_p = get_sheet_data('prestador')
+    df_serv = get_sheet_data('servico') # Carrega serviços aqui fora
     
     map_v = {f"{r['nome']} ({r.get('placa','S/P')})": int(r['id_veiculo']) for _, r in df_v.iterrows()} if not df_v.empty else {}
     map_p = {f"{r['empresa']}": int(r['id_prestador']) for _, r in df_p.iterrows()} if not df_p.empty else {}
     
+    # --- MODO LISTA DE SERVIÇOS ---
     if st.session_state[state_key] is None:
         
-        # Botão de Novo Serviço
+        # Botão Novo
         if st.button("➕ Novo Serviço"):
+            # Só impede de CRIAR se não tiver dados. Visualizar pode.
             if not map_v or not map_p:
-                st.error("Para criar um novo serviço, cadastre antes um Veículo e um Prestador.")
+                st.error("Para cadastrar um novo serviço, é necessário ter Veículos e Prestadores cadastrados.")
             else:
                 st.session_state[state_key] = 'NEW'
                 st.rerun()
         
-        # Lista de Serviços Existentes (independente se as tabelas auxiliares carregaram ou não)
-        df_serv = get_sheet_data('servico')
-        
+        # LISTA EXISTENTE (Mostra mesmo se não tiver veículo/prestador carregado)
         if not df_serv.empty:
             if 'data_servico' in df_serv.columns:
                 df_serv['data_servico_dt'] = pd.to_datetime(df_serv['data_servico'], errors='coerce')
@@ -274,7 +274,7 @@ def service_management_ui():
                 
                 sid = int(row.get('id_servico', 0))
                 
-                # CHAVES ÚNICAS PARA CADA BOTÃO (CORREÇÃO DO NODE ERROR)
+                # Chaves Absolutas
                 if c2.button("✏️", key=f"btn_ed_serv_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
@@ -282,18 +282,13 @@ def service_management_ui():
                 if c3.button("🗑️", key=f"btn_del_serv_{sid}"):
                     execute_crud_operation('servico', id_value=sid, operation='delete')
                     st.success("Excluído!")
-                    time.sleep(1.5) # Tempo extra para o Google Sheets não retornar dados velhos
+                    time.sleep(1.5) # Tempo essencial
                     st.rerun()
         else:
             st.info("Nenhum serviço registrado.")
 
-        # Aviso no rodapé apenas se REALMENTE não houver veículos/prestadores
-        if (df_v.empty or df_p.empty) and df_serv.empty:
-             st.warning("⚠️ Dica: Cadastre Veículos e Prestadores para começar.")
-
-    # MODO FORMULÁRIO SERVIÇO
+    # --- MODO FORMULÁRIO DE SERVIÇO ---
     else:
-        df_serv = get_sheet_data('servico')
         is_new = st.session_state[state_key] == 'NEW'
         curr = {}
         current_id_v = 0
@@ -307,7 +302,6 @@ def service_management_ui():
                 current_id_p = int(curr.get('id_prestador', 0))
 
         with st.form("form_servico_especial"):
-            # Lógica segura para selecionar o índice
             idx_v = 0
             if current_id_v in map_v.values():
                 idx_v = list(map_v.values()).index(current_id_v)
@@ -325,10 +319,10 @@ def service_management_ui():
             nome_s = st.text_input("Nome do Serviço", value=curr.get('nome_servico', ''))
             
             c_dt, c_gr = st.columns(2)
-            try: dt_val = pd.to_datetime(curr.get('data_servico')) if curr.get('data_servico') else date.today()
-            except: dt_val = date.today()
+            try: d_val = pd.to_datetime(curr.get('data_servico')) if curr.get('data_servico') else date.today()
+            except: d_val = date.today()
             
-            data_s = c_dt.date_input("Data Serviço", value=dt_val, format="DD/MM/YYYY")
+            data_s = c_dt.date_input("Data Serviço", value=d_val, format="DD/MM/YYYY")
             garantia = c_gr.number_input("Garantia (dias)", value=int(curr.get('garantia_dias', 90)))
             
             c_val, c_km = st.columns(2)
@@ -342,9 +336,10 @@ def service_management_ui():
             
             if st.form_submit_button("Salvar Serviço"):
                 if not map_v or not map_p:
-                    st.error("Impossível salvar. Verifique cadastros de Veículo/Prestador.")
+                    st.error("Impossível salvar sem Veículo e Prestador disponíveis.")
                 else:
                     dt_venc = data_s + timedelta(days=int(garantia))
+                    
                     payload = {
                         'id_veiculo': map_v.get(sel_v_name, 0),
                         'id_prestador': map_p.get(sel_p_name, 0),
@@ -420,7 +415,6 @@ def main():
             anos_disponiveis = sorted(df_full['Ano'].dropna().unique().astype(int).tolist(), reverse=True)
             sel_ano = c_filt1.selectbox("Filtrar por Ano", ["Todos"] + anos_disponiveis)
             
-            # Conversão para string evita TypeError
             veiculos_disp = sorted(df_full['nome'].astype(str).unique().tolist())
             sel_veiculo = c_filt2.selectbox("Filtrar por Veículo", ["Todos"] + veiculos_disp)
             
