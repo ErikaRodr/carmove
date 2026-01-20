@@ -12,7 +12,7 @@ import numpy as np
 SHEET_ID = '1BNjgWhvEj8NbnGr4x7F42LW7QbQiG5kZ1FBhfr9Q-4g'
 PLANILHA_TITULO = 'Dados Automóvel'
 
-# Define as colunas esperadas para cada aba
+# Define as colunas esperadas para garantir que o formulário apareça
 EXPECTED_COLS = {
     'veiculo': ['id_veiculo', 'nome', 'placa', 'ano', 'valor_pago', 'data_compra'],
     'prestador': ['id_prestador', 'empresa', 'telefone', 'nome_prestador', 'cnpj', 'email', 'endereco', 'numero', 'cidade', 'bairro', 'cep'],
@@ -41,10 +41,9 @@ def get_sheet_data(sheet_name):
         if df.empty:
             return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
-        # Padronização de IDs para garantir que sejam números
+        # Padronização de IDs
         id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
         if id_col in df.columns:
-            # Remove pontos decimais e converte para int
             df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
         
         return df
@@ -52,6 +51,7 @@ def get_sheet_data(sheet_name):
         return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
 def get_data(sheet_name, filter_col=None, filter_value=None):
+    """Busca dados com filtro seguro (Resolve o NameError)."""
     df = get_sheet_data(sheet_name)
     if df.empty: return df
     
@@ -66,22 +66,25 @@ def get_data(sheet_name, filter_col=None, filter_value=None):
     return df
 
 def write_sheet_data(sheet_name, df_new):
+    """Salva dados tratando erros de JSON/NaN."""
     try:
         gc = get_gspread_client()
         sh = gc.open_by_key(SHEET_ID) if SHEET_ID else gc.open(PLANILHA_TITULO)
         worksheet = sh.worksheet(sheet_name)
         
         df_save = df_new.copy()
+        
+        # Datas para string
         for col in df_save.select_dtypes(include=['datetime64']).columns:
             df_save[col] = df_save[col].dt.strftime('%Y-%m-%d')
             
-        # Limpeza para evitar erros de JSON
+        # 🔥 LIMPEZA CRÍTICA: Remove NaN e Infinitos que quebram o Google Sheets
         df_save = df_save.fillna("") 
         df_save = df_save.replace([np.inf, -np.inf], 0)
         
         worksheet.clear()
         worksheet.update('A1', [df_save.columns.tolist()] + df_save.values.tolist(), value_input_option='USER_ENTERED')
-        get_sheet_data.clear() # Limpa cache para atualizar relatório imediatamente
+        get_sheet_data.clear()
         return True
     except Exception as e:
         st.error(f"Erro ao salvar: {e}")
@@ -115,130 +118,211 @@ def execute_crud_operation(sheet_name, data=None, id_value=None, operation='inse
         return write_sheet_data(sheet_name, df_updated)
 
 # ==============================================================================
-# 3. LÓGICA DE RELATÓRIO (CORRIGIDA)
+# 3. RELATÓRIOS (JOIN)
 # ==============================================================================
 
 def get_full_service_data():
-    """Busca e unifica os dados para os relatórios."""
     df_s = get_sheet_data('servico')
     df_v = get_sheet_data('veiculo')
     df_p = get_sheet_data('prestador')
 
-    # Se não houver serviços, retorna vazio
-    if df_s.empty:
-        return pd.DataFrame()
+    if df_s.empty: return pd.DataFrame()
 
-    # 🛑 CORREÇÃO DE TIPAGEM: Garante que os IDs sejam do mesmo tipo (int) antes do merge
-    # Isso resolve o problema do relatório vazio
+    # Garante tipagem para o Merge
     df_s['id_veiculo'] = pd.to_numeric(df_s['id_veiculo'], errors='coerce').fillna(0).astype(int)
     df_s['id_prestador'] = pd.to_numeric(df_s['id_prestador'], errors='coerce').fillna(0).astype(int)
     
     if not df_v.empty:
         df_v['id_veiculo'] = pd.to_numeric(df_v['id_veiculo'], errors='coerce').fillna(0).astype(int)
-        # Merge Serviços + Veículos
         df_merged = pd.merge(df_s, df_v[['id_veiculo', 'nome', 'placa']], on='id_veiculo', how='left')
     else:
         df_merged = df_s.copy()
-        df_merged['nome'] = 'Desconhecido'
-        df_merged['placa'] = '-'
+        df_merged['nome'] = '-'
 
     if not df_p.empty:
         df_p['id_prestador'] = pd.to_numeric(df_p['id_prestador'], errors='coerce').fillna(0).astype(int)
-        # Merge + Prestadores
         df_merged = pd.merge(df_merged, df_p[['id_prestador', 'empresa']], on='id_prestador', how='left')
     else:
-        df_merged['empresa'] = 'Desconhecido'
+        df_merged['empresa'] = '-'
 
-    # Tratamento de Data e Valor
     df_merged['data_vencimento'] = pd.to_datetime(df_merged['data_vencimento'], errors='coerce')
-    df_merged['data_servico'] = pd.to_datetime(df_merged['data_servico'], errors='coerce')
     df_merged['valor'] = pd.to_numeric(df_merged['valor'], errors='coerce').fillna(0.0)
-
-    # Cálculo
     df_merged['Dias p/ Vencer'] = (df_merged['data_vencimento'] - pd.to_datetime(date.today())).dt.days
     
-    # Preenche nomes vazios caso o merge não tenha encontrado correspondência
-    df_merged['nome'] = df_merged['nome'].fillna('Veículo Removido')
-    df_merged['empresa'] = df_merged['empresa'].fillna('Prestador Removido')
-
     return df_merged
 
 # ==============================================================================
-# 4. INTERFACE
+# 4. INTERFACES DE GESTÃO (UI)
 # ==============================================================================
 
 def generic_management_ui(category_name, sheet_name, display_col):
+    """UI genérica para Veículos e Prestadores."""
     st.subheader(f"Gestão de {category_name}")
     state_key = f'edit_{sheet_name}_id'
-    id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
+    id_col = f'id_{sheet_name}'
     
-    # LISTA
+    # Lista
     if st.session_state[state_key] is None:
         if st.button(f"➕ Novo {category_name}"):
             st.session_state[state_key] = 'NEW'
             st.rerun()
         
         df = get_sheet_data(sheet_name)
-        if df.empty or len(df) == 0:
-            st.info(f"Nenhum registro encontrado.")
+        if df.empty:
+            st.info("Nenhum registro.")
         else:
             for _, row in df.iterrows():
-                col_data, col_edit, col_del = st.columns([0.7, 0.15, 0.15])
-                val_disp = str(row.get(display_col, 'Sem Nome'))
-                col_data.write(f"**{val_disp}**")
-                
+                c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
+                c1.write(f"**{row.get(display_col)}**")
                 sid = int(row.get(id_col, 0))
-                if col_edit.button("✏️", key=f"ed_{sheet_name}_{sid}"):
+                if c2.button("✏️", key=f"ed_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
-                if col_del.button("🗑️", key=f"del_{sheet_name}_{sid}"):
+                if c3.button("🗑️", key=f"del_{sid}"):
                     execute_crud_operation(sheet_name, id_value=sid, operation='delete')
                     st.rerun()
-    
-    # FORMULÁRIO
+    # Formulário
     else:
-        is_new = st.session_state[state_key] == 'NEW'
         df = get_sheet_data(sheet_name)
-        current_data = {}
+        is_new = st.session_state[state_key] == 'NEW'
+        curr = {}
         if not is_new:
             res = df[df[id_col] == st.session_state[state_key]]
-            if not res.empty: current_data = res.iloc[0].to_dict()
-
+            if not res.empty: curr = res.iloc[0].to_dict()
+        
         with st.form(f"form_{sheet_name}"):
             payload = {}
-            cols = EXPECTED_COLS.get(sheet_name, df.columns.tolist())
-            
+            cols = EXPECTED_COLS.get(sheet_name)
             for col in cols:
                 if col == id_col: continue
-                label = col.replace("_", " ").title()
-                val = current_data.get(col, "")
-                
+                val = curr.get(col, "")
                 if "data" in col:
-                    try: d_val = pd.to_datetime(val) if val else date.today()
-                    except: d_val = date.today()
-                    payload[col] = st.date_input(label, value=d_val)
-                elif any(x in col for x in ["valor", "km", "ano", "telefone"]):
-                    try: n_val = float(val) if val else 0.0
-                    except: n_val = 0.0
-                    payload[col] = st.number_input(label, value=n_val)
+                    try: d = pd.to_datetime(val) if val else date.today()
+                    except: d = date.today()
+                    payload[col] = st.date_input(col, value=d)
+                elif any(x in col for x in ["valor", "ano", "numero"]):
+                    payload[col] = st.number_input(col, value=float(val) if val else 0.0)
                 else:
-                    payload[col] = st.text_input(label, value=str(val))
+                    payload[col] = st.text_input(col, value=str(val))
             
-            if st.form_submit_button("💾 Salvar"):
-                for k, v in payload.items():
+            if st.form_submit_button("Salvar"):
+                for k,v in payload.items():
                     if isinstance(v, (date, pd.Timestamp)): payload[k] = v.strftime('%Y-%m-%d')
-                
                 if is_new: execute_crud_operation(sheet_name, data=payload, operation='insert')
                 else: execute_crud_operation(sheet_name, data=payload, id_value=st.session_state[state_key], operation='update')
-                
                 st.session_state[state_key] = None
-                st.success("Salvo!")
-                time.sleep(1)
                 st.rerun()
-                
+        
         if st.button("Cancelar"):
             st.session_state[state_key] = None
             st.rerun()
+
+def service_management_ui():
+    """UI ESPECÍFICA PARA SERVIÇOS (COM SELECTBOX)."""
+    st.subheader("Gestão de Serviços")
+    state_key = 'edit_servico_id'
+    
+    # Carrega dados auxiliares para o Selectbox
+    df_v = get_sheet_data('veiculo')
+    df_p = get_sheet_data('prestador')
+    
+    # Cria dicionários {Nome: ID}
+    map_v = {f"{r['nome']} ({r.get('placa','S/P')})": int(r['id_veiculo']) for _, r in df_v.iterrows()} if not df_v.empty else {}
+    map_p = {f"{r['empresa']}": int(r['id_prestador']) for _, r in df_p.iterrows()} if not df_p.empty else {}
+    
+    # Lista
+    if st.session_state[state_key] is None:
+        if not map_v or not map_p:
+            st.warning("⚠️ Cadastre Veículos e Prestadores antes de lançar Serviços.")
+            return
+
+        if st.button("➕ Novo Serviço"):
+            st.session_state[state_key] = 'NEW'
+            st.rerun()
+            
+        df = get_sheet_data('servico')
+        if not df.empty:
+            for _, row in df.iterrows():
+                c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
+                c1.write(f"**{row.get('nome_servico')}** - {row.get('data_servico')}")
+                sid = int(row.get('id_servico', 0))
+                if c2.button("✏️", key=f"ed_s_{sid}"):
+                    st.session_state[state_key] = sid
+                    st.rerun()
+                if c3.button("🗑️", key=f"del_s_{sid}"):
+                    execute_crud_operation('servico', id_value=sid, operation='delete')
+                    st.rerun()
+        else:
+            st.info("Nenhum serviço.")
+
+    # Formulário Especial de Serviço
+    else:
+        df = get_sheet_data('servico')
+        is_new = st.session_state[state_key] == 'NEW'
+        curr = {}
+        current_id_v = 0
+        current_id_p = 0
+        
+        if not is_new:
+            res = df[df['id_servico'] == st.session_state[state_key]]
+            if not res.empty:
+                curr = res.iloc[0].to_dict()
+                current_id_v = int(curr.get('id_veiculo', 0))
+                current_id_p = int(curr.get('id_prestador', 0))
+
+        with st.form("form_servico_especial"):
+            # Encontra o índice correto para o selectbox
+            idx_v = list(map_v.values()).index(current_id_v) if current_id_v in map_v.values() else 0
+            idx_p = list(map_p.values()).index(current_id_p) if current_id_p in map_p.values() else 0
+            
+            sel_v_name = st.selectbox("Veículo", options=list(map_v.keys()), index=idx_v)
+            sel_p_name = st.selectbox("Prestador", options=list(map_p.keys()), index=idx_p)
+            
+            nome_s = st.text_input("Nome do Serviço", value=curr.get('nome_servico', ''))
+            
+            c_dt, c_gr = st.columns(2)
+            try: dt_val = pd.to_datetime(curr.get('data_servico')) if curr.get('data_servico') else date.today()
+            except: dt_val = date.today()
+            data_s = c_dt.date_input("Data Serviço", value=dt_val)
+            garantia = c_gr.number_input("Garantia (dias)", value=int(curr.get('garantia_dias', 90)))
+            
+            c_val, c_km = st.columns(2)
+            valor = c_val.number_input("Valor (R$)", value=float(curr.get('valor', 0.0)))
+            km_r = c_km.number_input("KM Realizado", value=float(curr.get('km_realizado', 0)))
+            
+            registro = st.text_input("Nota/Registro", value=curr.get('registro', ''))
+            
+            if st.form_submit_button("Salvar Serviço"):
+                # Calcula Data Vencimento
+                dt_venc = data_s + timedelta(days=int(garantia))
+                
+                payload = {
+                    'id_veiculo': map_v[sel_v_name],
+                    'id_prestador': map_p[sel_p_name],
+                    'nome_servico': nome_s,
+                    'data_servico': data_s.strftime('%Y-%m-%d'),
+                    'garantia_dias': int(garantia),
+                    'valor': float(valor),
+                    'km_realizado': km_r,
+                    'registro': registro,
+                    'data_vencimento': dt_venc.strftime('%Y-%m-%d')
+                }
+                
+                if is_new: execute_crud_operation('servico', data=payload, operation='insert')
+                else: execute_crud_operation('servico', data=payload, id_value=st.session_state[state_key], operation='update')
+                
+                st.session_state[state_key] = None
+                st.success("Serviço salvo!")
+                time.sleep(1)
+                st.rerun()
+
+        if st.button("Cancelar"):
+            st.session_state[state_key] = None
+            st.rerun()
+
+# ==============================================================================
+# 5. SIMULAÇÃO E MAIN
+# ==============================================================================
 
 def run_auto_test_data():
     st.info("Simulando...")
@@ -256,10 +340,10 @@ def run_auto_test_data():
             'id_veiculo': int(df_v.iloc[0]['id_veiculo']), 
             'id_prestador': int(df_p.iloc[0]['id_prestador']),
             'nome_servico': 'Revisão Teste', 'data_servico': date.today().strftime('%Y-%m-%d'),
-            'garantia_dias': 180, 'valor': 500.0, 'km_realizado': 10000, 'km_proxima_revisao': 20000, 
-            'registro': 'TEST-99', 'data_vencimento': (date.today() + timedelta(days=180)).strftime('%Y-%m-%d')
+            'garantia_dias': 180, 'valor': 500.0, 'km_realizado': 10000, 'registro': 'TEST-99', 
+            'data_vencimento': (date.today() + timedelta(days=180)).strftime('%Y-%m-%d')
         }, operation='insert')
-        st.success("Feito!")
+        st.success("Dados criados!")
         time.sleep(1)
         st.rerun()
 
@@ -276,60 +360,30 @@ def main():
         st.header("⚙️ Ferramentas")
         if st.button("🧪 Rodar Simulação"): run_auto_test_data()
 
-    # ----------------------------------------
-    # ABA RESUMO (RELATÓRIOS)
-    # ----------------------------------------
     with tab_resumo:
         df_full = get_full_service_data()
-        
         if not df_full.empty:
-            # Métricas
-            total_gasto = df_full['valor'].sum()
-            total_servicos = len(df_full)
             c1, c2 = st.columns(2)
-            c1.metric("Total Gasto (Geral)", f"R$ {total_gasto:,.2f}")
-            c2.metric("Serviços Realizados", total_servicos)
-            
-            st.divider()
-            
-            # Gráfico de Gastos por Veículo
-            st.subheader("Gastos por Veículo")
-            if 'nome' in df_full.columns and 'valor' in df_full.columns:
-                df_chart = df_full.groupby('nome')['valor'].sum().reset_index()
-                st.bar_chart(df_chart.set_index('nome'))
-            else:
-                st.warning("Dados incompletos para gerar gráfico.")
+            c1.metric("Total Gasto", f"R$ {df_full['valor'].sum():,.2f}")
+            c2.metric("Serviços", len(df_full))
+            st.bar_chart(df_full.groupby('nome')['valor'].sum())
         else:
-            st.info("Nenhum serviço registrado para exibir no resumo.")
+            st.info("Sem dados de serviço.")
 
-    # ----------------------------------------
-    # ABA HISTÓRICO
-    # ----------------------------------------
     with tab_hist:
         df_full = get_full_service_data()
         if not df_full.empty:
-            # Seleciona apenas colunas úteis para exibição
-            cols_show = ['nome', 'placa', 'nome_servico', 'empresa', 'data_servico', 'valor', 'Dias p/ Vencer']
-            # Renomeia para ficar bonito
-            rename_map = {
-                'nome': 'Veículo', 'placa': 'Placa', 'nome_servico': 'Serviço', 
-                'empresa': 'Prestador', 'data_servico': 'Data', 'valor': 'Valor (R$)'
-            }
-            
-            # Garante que as colunas existem antes de mostrar
-            final_cols = [c for c in cols_show if c in df_full.columns]
-            st.dataframe(df_full[final_cols].rename(columns=rename_map), use_container_width=True)
+            cols = ['nome', 'placa', 'nome_servico', 'empresa', 'data_servico', 'valor', 'Dias p/ Vencer']
+            st.dataframe(df_full[[c for c in cols if c in df_full.columns]], use_container_width=True)
         else:
             st.info("Histórico vazio.")
 
-    # ----------------------------------------
-    # ABA MANUAL
-    # ----------------------------------------
     with tab_manual:
+        # 🔥 CORREÇÃO: Menu correto
         opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True)
         st.divider()
         if opcao == "Veículo": generic_management_ui("Veículo", "veiculo", "nome")
-        elif opcao == "Serviço": generic_management_ui("Serviço", "servico", "nome_servico")
+        elif opcao == "Serviço": service_management_ui() # 🔥 UI NOVA PARA SERVIÇO
         elif opcao == "Prestador": generic_management_ui("Prestador", "prestador", "empresa")
 
 if __name__ == '__main__':
