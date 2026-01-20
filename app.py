@@ -41,7 +41,6 @@ def get_sheet_data(sheet_name):
         if df.empty:
             return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
-        # Padronização de IDs
         id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
         if id_col in df.columns:
             df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
@@ -72,7 +71,6 @@ def write_sheet_data(sheet_name, df_new):
         
         df_save = df_new.copy()
         
-        # Datas para string
         for col in df_save.select_dtypes(include=['datetime64']).columns:
             df_save[col] = df_save[col].dt.strftime('%Y-%m-%d')
             
@@ -158,7 +156,6 @@ def generic_management_ui(category_name, sheet_name, display_col):
     state_key = f'edit_{sheet_name}_id'
     id_col = f'id_{sheet_name}'
     
-    # Lista
     if st.session_state[state_key] is None:
         if st.button(f"➕ Novo {category_name}"):
             st.session_state[state_key] = 'NEW'
@@ -178,7 +175,6 @@ def generic_management_ui(category_name, sheet_name, display_col):
                 if c3.button("🗑️", key=f"del_{sid}"):
                     execute_crud_operation(sheet_name, id_value=sid, operation='delete')
                     st.rerun()
-    # Formulário
     else:
         df = get_sheet_data(sheet_name)
         is_new = st.session_state[state_key] == 'NEW'
@@ -199,19 +195,14 @@ def generic_management_ui(category_name, sheet_name, display_col):
                     try: d = pd.to_datetime(val) if val else date.today()
                     except: d = date.today()
                     payload[col] = st.date_input(label, value=d, format="DD/MM/YYYY")
-                
-                # Inteiros (Sem vírgula)
                 elif any(x in col for x in ["telefone", "numero", "ano", "km"]):
                     try: n_val = int(float(val)) if val else 0
                     except: n_val = 0
                     payload[col] = st.number_input(label, value=n_val, step=1, format="%d")
-                
-                # Valores Monetários
                 elif "valor" in col:
                     try: n_val = float(val) if val else 0.0
                     except: n_val = 0.0
                     payload[col] = st.number_input(label, value=n_val, format="%.2f")
-                
                 else:
                     payload[col] = st.text_input(label, value=str(val))
             
@@ -373,45 +364,85 @@ def main():
     # ABA RESUMO
     with tab_resumo:
         df_full = get_full_service_data()
+        
         if not df_full.empty:
-            c1, c2 = st.columns(2)
-            c1.metric("Total Gasto", f"R$ {df_full['valor'].sum():,.2f}")
-            c2.metric("Serviços", len(df_full))
+            df_full['Ano'] = df_full['data_servico'].dt.year
+            
+            st.subheader("Filtros do Dashboard")
+            c_filt1, c_filt2 = st.columns(2)
+            
+            anos_disponiveis = sorted(df_full['Ano'].dropna().unique().astype(int).tolist(), reverse=True)
+            sel_ano = c_filt1.selectbox("Filtrar por Ano", ["Todos"] + anos_disponiveis)
+            
+            veiculos_disp = sorted(df_full['nome'].unique().tolist())
+            sel_veiculo = c_filt2.selectbox("Filtrar por Veículo", ["Todos"] + veiculos_disp)
+            
+            df_filtered = df_full.copy()
+            if sel_ano != "Todos":
+                df_filtered = df_filtered[df_filtered['Ano'] == sel_ano]
+            
+            if sel_veiculo != "Todos":
+                df_filtered = df_filtered[df_filtered['nome'] == sel_veiculo]
             
             st.divider()
-            st.subheader("Gastos por Veículo")
-            
-            df_chart = df_full.groupby('nome', as_index=False)['valor'].sum()
-            chart = alt.Chart(df_chart).mark_bar().encode(
-                x=alt.X('nome', sort='-y', title='Veículo'),
-                y=alt.Y('valor', title='Total Gasto'),
-                tooltip=[alt.Tooltip('nome', title='Veículo'), alt.Tooltip('valor', format=',.2f', title='Valor')],
-                color=alt.value('#FF4B4B')
-            ).properties(height=400).interactive()
-            st.altair_chart(chart, use_container_width=True)
+
+            if not df_filtered.empty:
+                c1, c2 = st.columns(2)
+                c1.metric("Total Gasto (Filtro)", f"R$ {df_filtered['valor'].sum():,.2f}")
+                c2.metric("Serviços Realizados", len(df_filtered))
+                
+                st.subheader("Gastos Detalhados")
+                
+                df_chart = df_filtered.groupby('nome', as_index=False)['valor'].sum()
+                
+                base = alt.Chart(df_chart).encode(
+                    x=alt.X('nome', sort='-y', title='Veículo'),
+                    y=alt.Y('valor', title='Total Gasto (R$)')
+                )
+                barras = base.mark_bar(color='#FF4B4B')
+                rotulos = base.mark_text(align='center', baseline='bottom', dy=-5, fontSize=12).encode(text=alt.Text('valor', format=',.2f'))
+                
+                st.altair_chart((barras + rotulos).properties(height=400).interactive(), use_container_width=True)
+            else:
+                st.warning("Nenhum dado encontrado.")
+                
         else:
             st.info("Sem dados de serviço.")
 
-    # ABA HISTÓRICO COM FILTRO NOVO 🟢
+    # 🟢 ABA HISTÓRICO: FILTRO DUPLO (ANO + VEÍCULO)
     with tab_hist:
         df_full = get_full_service_data()
         if not df_full.empty:
-            # --- FILTRO POR VEÍCULO 🟢 ---
-            st.subheader("Filtros")
-            lista_veiculos = ["Todos"] + sorted(list(df_full['nome'].unique()))
-            veiculo_selecionado = st.selectbox("Selecione o Veículo:", lista_veiculos)
+            df_full['Ano'] = df_full['data_servico'].dt.year
             
-            # Aplica o filtro se não for "Todos"
-            if veiculo_selecionado != "Todos":
-                df_full = df_full[df_full['nome'] == veiculo_selecionado]
-            # -----------------------------
+            st.subheader("Filtros")
+            c_hf1, c_hf2 = st.columns(2)
+            
+            # Filtro Veículo
+            v_list = ["Todos"] + sorted(list(df_full['nome'].unique()))
+            v_sel = c_hf1.selectbox("Veículo:", v_list, key="hist_veiculo")
+            
+            # Filtro Ano
+            years_list = ["Todos"] + sorted(list(df_full['Ano'].unique().astype(int)), reverse=True)
+            y_sel = c_hf2.selectbox("Ano:", years_list, key="hist_ano")
+            
+            # Aplica Filtros
+            df_hist_final = df_full.copy()
+            if v_sel != "Todos":
+                df_hist_final = df_hist_final[df_hist_final['nome'] == v_sel]
+            if y_sel != "Todos":
+                df_hist_final = df_hist_final[df_hist_final['Ano'] == y_sel]
 
+            # Exibição
             cols = ['nome', 'placa', 'nome_servico', 'empresa', 'data_servico', 'valor', 'Dias p/ Vencer']
-            df_display = df_full[cols].copy()
+            df_display = df_hist_final[cols].copy()
             if 'data_servico' in df_display.columns:
                 df_display['data_servico'] = df_display['data_servico'].dt.strftime('%d/%m/%Y')
             
-            st.dataframe(df_display, use_container_width=True)
+            if not df_display.empty:
+                st.dataframe(df_display, use_container_width=True)
+            else:
+                st.warning("Nenhum registro encontrado para este filtro.")
         else:
             st.info("Histórico vazio.")
 
