@@ -242,7 +242,7 @@ def generic_management_ui(category_name, sheet_name, display_col):
             st.rerun()
 
 def provider_management_ui():
-    st.subheader("Gestão de Prestadores")
+    
     state_key = 'edit_prestador_id'
     
     if st.session_state[state_key] is None:
