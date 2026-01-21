@@ -159,12 +159,12 @@ def get_full_service_data():
     return df_merged.sort_values(by='data_servico', ascending=False)
 
 # ==============================================================================
-# 4. INTERFACES (SEPARADAS E CORRIGIDAS)
+# 4. INTERFACES INDIVIDUAIS (GARANTE TÍTULOS CORRETOS)
 # ==============================================================================
 
-# 🟢 UI EXCLUSIVA PARA VEÍCULOS
+# 🟢 1. GESTÃO DE VEÍCULOS
 def vehicle_management_ui():
-    st.subheader("Gestão de Veículos")
+    st.subheader("Gestão de Veículos") # Título Fixo
     state_key = 'edit_veiculo_id'
     
     if st.session_state[state_key] is None:
@@ -213,7 +213,6 @@ def vehicle_management_ui():
             data_c = st.date_input("Data de Compra", value=d_val, format="DD/MM/YYYY")
             
             if st.form_submit_button("💾 Salvar Veículo"):
-                # 🟢 VALIDAÇÃO VEÍCULO
                 if not nome or nome.strip() == "":
                     st.error("Erro: O Nome do Veículo é obrigatório.")
                 else:
@@ -235,9 +234,9 @@ def vehicle_management_ui():
             st.session_state[state_key] = None
             st.rerun()
 
-# 🟢 UI EXCLUSIVA PARA PRESTADORES
+# 🟢 2. GESTÃO DE PRESTADORES
 def provider_management_ui():
-    st.subheader("Gestão de Prestadores")
+    st.subheader("Gestão de Prestadores") # Título Fixo e Correto
     state_key = 'edit_prestador_id'
     
     if st.session_state[state_key] is None:
@@ -276,7 +275,6 @@ def provider_management_ui():
         if 'prov_bai' not in st.session_state: st.session_state.prov_bai = str(curr.get('bairro', ''))
         if 'prov_cid' not in st.session_state: st.session_state.prov_cid = str(curr.get('cidade', ''))
 
-        # Busca CEP fora do form
         st.markdown("##### 📍 Endereço Automático")
         c_cep, c_btn = st.columns([0.4, 0.6])
         input_cep = c_cep.text_input("CEP:", value=str(curr.get('cep', '')), key="input_cep_search")
@@ -309,7 +307,6 @@ def provider_management_ui():
             val_cid = st.text_input("Cidade", value=st.session_state.prov_cid)
             
             if st.form_submit_button("💾 Salvar Prestador"):
-                # 🟢 VALIDAÇÃO PRESTADOR
                 if not val_empresa or val_empresa.strip() == "":
                     st.error("❌ Erro: O campo 'Nome da Empresa' é obrigatório!")
                 else:
@@ -341,9 +338,9 @@ def provider_management_ui():
             st.session_state[state_key] = None
             st.rerun()
 
-# 🟢 UI EXCLUSIVA PARA SERVIÇOS
+# 🟢 3. GESTÃO DE SERVIÇOS
 def service_management_ui():
-    st.subheader("Gestão de Serviços")
+    st.subheader("Gestão de Serviços") # Título Fixo
     state_key = 'edit_servico_id'
     
     df_v = get_sheet_data('veiculo')
@@ -389,6 +386,7 @@ def service_management_ui():
         curr = {}
         curr_id_v = 0
         curr_id_p = 0
+        
         if not is_new:
             res = df_serv[df_serv['id_servico'] == st.session_state[state_key]]
             if not res.empty:
@@ -426,7 +424,6 @@ def service_management_ui():
             if st.form_submit_button("💾 Salvar Serviço"):
                 if not map_v or not map_p:
                     st.error("Não é possível salvar sem Veículo/Prestador.")
-                # 🟢 VALIDAÇÃO SERVIÇO
                 elif not nome_s or nome_s.strip() == "":
                     st.error("❌ Erro: A Descrição do Serviço é obrigatória!")
                 elif valor <= 0:
@@ -575,10 +572,10 @@ def main():
 
     # ABA MANUAL
     with tab_manual:
-        # CORREÇÃO: Chave nova "menu_principal_v3" para apagar o "se" da memória
-        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="menu_principal_v3")
+        # CORREÇÃO: Chave "nav_main_final" para resetar cache do menu e mostrar "Serviço"
+        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="nav_main_final")
         st.divider()
-        if opcao == "Veículo": vehicle_management_ui() # 🟢 FUNÇÃO CORRETA PARA VEÍCULO
+        if opcao == "Veículo": vehicle_management_ui()
         elif opcao == "Serviço": service_management_ui()
         elif opcao == "Prestador": provider_management_ui()
 
