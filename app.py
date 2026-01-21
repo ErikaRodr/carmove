@@ -38,7 +38,6 @@ def get_sheet_data(sheet_name, force_refresh=False):
 
 @st.cache_data(ttl=10)
 def _read_data_cached(sheet_name):
-    # Tenta ler 3 vezes (Retry Logic) para evitar erros de conexão
     for i in range(3):
         try:
             gc = get_gspread_client()
@@ -53,11 +52,9 @@ def _read_data_cached(sheet_name):
             id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
             if id_col in df.columns:
                 df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
-            
             return df
         except Exception:
             time.sleep(0.5)
-            
     return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
 def write_sheet_data(sheet_name, df_new):
@@ -166,6 +163,7 @@ def get_full_service_data():
 # 4. INTERFACES (UI)
 # ==============================================================================
 
+# --- UI VEÍCULOS ---
 def generic_management_ui(category_name, sheet_name, display_col):
     st.subheader(f"Gestão de {category_name}")
     state_key = f'edit_{sheet_name}_id'
@@ -228,21 +226,26 @@ def generic_management_ui(category_name, sheet_name, display_col):
                     payload[col] = st.text_input(label, value=str(val))
             
             if st.form_submit_button("💾 Salvar"):
-                for k,v in payload.items():
-                    if isinstance(v, (date, pd.Timestamp)): payload[k] = v.strftime('%Y-%m-%d')
-                with st.spinner("Salvando..."):
-                    if is_new: execute_crud_operation(sheet_name, data=payload, operation='insert')
-                    else: execute_crud_operation(sheet_name, data=payload, id_value=st.session_state[state_key], operation='update')
-                st.session_state[state_key] = None
-                st.success("Salvo!")
-                time.sleep(0.5)
-                st.rerun()
+                # 🟢 VALIDAÇÃO DE VEÍCULO
+                if not payload.get('nome'):
+                    st.error("Erro: O campo 'Nome' é obrigatório!")
+                else:
+                    for k,v in payload.items():
+                        if isinstance(v, (date, pd.Timestamp)): payload[k] = v.strftime('%Y-%m-%d')
+                    with st.spinner("Salvando..."):
+                        if is_new: execute_crud_operation(sheet_name, data=payload, operation='insert')
+                        else: execute_crud_operation(sheet_name, data=payload, id_value=st.session_state[state_key], operation='update')
+                    st.session_state[state_key] = None
+                    st.success("Salvo!")
+                    time.sleep(0.5)
+                    st.rerun()
         if st.button("Cancelar"):
             st.session_state[state_key] = None
             st.rerun()
 
+# --- UI PRESTADORES (CORRIGIDA) ---
 def provider_management_ui():
-    
+    st.subheader("Gestão de Prestadores")
     state_key = 'edit_prestador_id'
     
     if st.session_state[state_key] is None:
@@ -295,13 +298,15 @@ def provider_management_ui():
             else:
                 st.error("CEP não encontrado.")
 
+        # --- FORMULÁRIO MANUAL (SEM LOOP) ---
         with st.form("form_prestador_manual"):
             st.markdown("##### 🏢 Dados da Empresa")
             val_empresa = st.text_input("Nome da Empresa (Obrigatório)*", value=curr.get('empresa', ''))
             
             c1, c2 = st.columns(2)
             val_cnpj = c1.text_input("CNPJ", value=curr.get('cnpj', ''))
-            val_contato = c2.text_input("Nome do Contato", value=curr.get('nome_prestador', ''))
+            # 🟢 MUDANÇA DE NOME
+            val_contato = c2.text_input("Nome do Prestador", value=curr.get('nome_prestador', ''))
             val_tel = st.text_input("Telefone", value=str(curr.get('telefone', '')))
             
             st.markdown("##### 🏠 Detalhes do Endereço")
@@ -313,6 +318,7 @@ def provider_management_ui():
             val_cid = st.text_input("Cidade", value=st.session_state.prov_cid)
             
             if st.form_submit_button("💾 Salvar Prestador"):
+                # 🟢 VALIDAÇÃO DE EMPRESA
                 if not val_empresa or val_empresa.strip() == "":
                     st.error("❌ Erro: O campo 'Nome da Empresa' é obrigatório!")
                 else:
@@ -344,6 +350,7 @@ def provider_management_ui():
             st.session_state[state_key] = None
             st.rerun()
 
+# --- UI SERVIÇOS ---
 def service_management_ui():
     st.subheader("Gestão de Serviços")
     state_key = 'edit_servico_id'
@@ -391,6 +398,7 @@ def service_management_ui():
         curr = {}
         curr_id_v = 0
         curr_id_p = 0
+        
         if not is_new:
             res = df_serv[df_serv['id_servico'] == st.session_state[state_key]]
             if not res.empty:
@@ -410,7 +418,7 @@ def service_management_ui():
             sel_v = st.selectbox("Veículo", options=opts_v, index=min(idx_v, len(opts_v)-1))
             sel_p = st.selectbox("Prestador", options=opts_p, index=min(idx_p, len(opts_p)-1))
             
-            nome_s = st.text_input("Descrição do Serviço", value=curr.get('nome_servico', ''))
+            nome_s = st.text_input("Descrição do Serviço (Obrigatório)*", value=curr.get('nome_servico', ''))
             
             c1, c2 = st.columns(2)
             try: d_val = pd.to_datetime(curr.get('data_servico')) if curr.get('data_servico') else date.today()
@@ -420,7 +428,7 @@ def service_management_ui():
             garantia = c2.number_input("Garantia (dias)", value=int(curr.get('garantia_dias', 90)))
             
             c3, c4 = st.columns(2)
-            valor = c3.number_input("Valor (R$)", value=float(curr.get('valor', 0.0)), format="%.2f")
+            valor = c3.number_input("Valor R$ (Obrigatório)*", value=float(curr.get('valor', 0.0)), format="%.2f")
             km_r = c4.number_input("KM Atual", value=int(float(curr.get('km_realizado', 0))), step=1, format="%d")
             
             reg = st.text_input("Nota/Registro", value=curr.get('registro', ''))
@@ -428,6 +436,11 @@ def service_management_ui():
             if st.form_submit_button("💾 Salvar Serviço"):
                 if not map_v or not map_p:
                     st.error("Não é possível salvar sem Veículo/Prestador.")
+                # 🟢 VALIDAÇÃO DE SERVIÇO
+                elif not nome_s or nome_s.strip() == "":
+                    st.error("❌ Erro: A Descrição do Serviço é obrigatória!")
+                elif valor <= 0:
+                    st.error("❌ Erro: O Valor (R$) deve ser maior que zero!")
                 else:
                     dt_venc = data_s + timedelta(days=int(garantia))
                     payload = {
@@ -454,6 +467,10 @@ def service_management_ui():
         if st.button("Cancelar"):
             st.session_state[state_key] = None
             st.rerun()
+
+# ==============================================================================
+# 5. MAIN
+# ==============================================================================
 
 def run_auto_test_data():
     st.info("Simulando...")
@@ -568,7 +585,8 @@ def main():
 
     # ABA MANUAL
     with tab_manual:
-        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="menu_nav_reboot")
+        # CORREÇÃO DEFINITIVA DO 'SE': Chave única para forçar re-render
+        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="menu_principal_v2")
         st.divider()
         if opcao == "Veículo": generic_management_ui("Veículo", "veiculo", "nome")
         elif opcao == "Serviço": service_management_ui()
