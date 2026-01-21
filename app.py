@@ -5,6 +5,7 @@ import time
 import gspread
 import numpy as np
 import altair as alt
+import requests # 🟢 NOVA IMPORTAÇÃO PARA O CEP
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO E CONEXÃO
@@ -13,9 +14,10 @@ import altair as alt
 SHEET_ID = '1BNjgWhvEj8NbnGr4x7F42LW7QbQiG5kZ1FBhfr9Q-4g'
 PLANILHA_TITULO = 'Dados Automóvel'
 
-# Estrutura padrão para evitar erros se a planilha falhar
+# Estrutura de Colunas
 EXPECTED_COLS = {
     'veiculo': ['id_veiculo', 'nome', 'placa', 'ano', 'valor_pago', 'data_compra'],
+    # Nota: O campo email existe no banco para compatibilidade, mas não será mostrado no form
     'prestador': ['id_prestador', 'empresa', 'telefone', 'nome_prestador', 'cnpj', 'email', 'endereco', 'numero', 'cidade', 'bairro', 'cep'],
     'servico': ['id_servico', 'id_veiculo', 'id_prestador', 'nome_servico', 'data_servico', 'garantia_dias', 'valor', 'km_realizado', 'km_proxima_revisao', 'registro', 'data_vencimento']
 }
@@ -31,18 +33,14 @@ def get_gspread_client():
         st.stop()
 
 def get_sheet_data(sheet_name, force_refresh=False):
-    """Gerencia o cache: só limpa se for uma ação de escrita (force_refresh)."""
     if force_refresh:
         st.cache_data.clear()
     return _read_data_cached(sheet_name)
 
-# 🟢 AJUSTE IMPORTANTE: TTL=15
-# O sistema guarda os dados por 15 segundos. Isso evita que ficar trocando de aba
-# faça o sistema ir buscar no Google toda hora, prevenindo o erro de "Dados não encontrados".
 @st.cache_data(ttl=15)
 def _read_data_cached(sheet_name):
-    # Tenta ler até 5 vezes se der erro de conexão
-    for i in range(5):
+    # Retry logic (3 tentativas)
+    for i in range(3):
         try:
             gc = get_gspread_client()
             sh = gc.open_by_key(SHEET_ID) if SHEET_ID else gc.open(PLANILHA_TITULO)
@@ -58,18 +56,14 @@ def _read_data_cached(sheet_name):
                 df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
             
             return df
-            
         except Exception:
-            # Backoff exponencial: espera um pouco mais a cada erro (0.5s, 1s, 1.5s...)
-            time.sleep(0.5 + (i * 0.3))
-    
-    # Se falhar todas, retorna vazio, mas é muito raro com o cache ativado
+            time.sleep(0.5 + (i * 0.2))
+            
     return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
 def get_data(sheet_name, filter_col=None, filter_value=None):
     df = get_sheet_data(sheet_name)
     if df.empty: return df
-    
     if filter_col and filter_value is not None:
         try:
             if str(filter_col).startswith('id_'):
@@ -81,7 +75,6 @@ def get_data(sheet_name, filter_col=None, filter_value=None):
     return df
 
 def write_sheet_data(sheet_name, df_new):
-    """Salva no Google e força a atualização do cache."""
     try:
         gc = get_gspread_client()
         sh = gc.open_by_key(SHEET_ID) if SHEET_ID else gc.open(PLANILHA_TITULO)
@@ -97,7 +90,6 @@ def write_sheet_data(sheet_name, df_new):
         worksheet.clear()
         worksheet.update('A1', [df_save.columns.tolist()] + df_save.values.tolist(), value_input_option='USER_ENTERED')
         
-        # 🟢 Força limpeza do cache para que a próxima leitura pegue o dado novo
         st.cache_data.clear()
         return True
     except Exception as e:
@@ -105,11 +97,10 @@ def write_sheet_data(sheet_name, df_new):
         return False
 
 # ==============================================================================
-# 2. CRUD
+# 2. CRUD E UTILITÁRIOS
 # ==============================================================================
 
 def execute_crud_operation(sheet_name, data=None, id_value=None, operation='insert'):
-    # Lê forçando atualização (bypass cache) para garantir IDs corretos
     df = get_sheet_data(sheet_name, force_refresh=True)
     id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
 
@@ -134,8 +125,22 @@ def execute_crud_operation(sheet_name, data=None, id_value=None, operation='inse
         df_updated = df[df[id_col] != int(id_value)]
         return write_sheet_data(sheet_name, df_updated)
 
+def consultar_cep(cep):
+    """Consulta API ViaCEP"""
+    cep = str(cep).replace("-", "").replace(".", "").strip()
+    if len(cep) == 8:
+        try:
+            response = requests.get(f"https://viacep.com.br/ws/{cep}/json/", timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                if "erro" not in data:
+                    return data
+        except:
+            return None
+    return None
+
 # ==============================================================================
-# 3. RELATÓRIOS (JOIN)
+# 3. RELATÓRIOS
 # ==============================================================================
 
 def get_full_service_data():
@@ -143,13 +148,11 @@ def get_full_service_data():
     df_v = get_sheet_data('veiculo')
     df_p = get_sheet_data('prestador')
 
-    if df_s.empty:
-        return pd.DataFrame()
+    if df_s.empty: return pd.DataFrame()
 
     df_s['id_veiculo'] = pd.to_numeric(df_s['id_veiculo'], errors='coerce').fillna(0).astype(int)
     df_s['id_prestador'] = pd.to_numeric(df_s['id_prestador'], errors='coerce').fillna(0).astype(int)
     
-    # Merge seguro
     if not df_v.empty:
         df_v['id_veiculo'] = pd.to_numeric(df_v['id_veiculo'], errors='coerce').fillna(0).astype(int)
         df_merged = pd.merge(df_s, df_v[['id_veiculo', 'nome', 'placa']], on='id_veiculo', how='left')
@@ -178,6 +181,7 @@ def get_full_service_data():
 # 4. INTERFACES (UI)
 # ==============================================================================
 
+# --- UI PARA VEÍCULOS (GENÉRICA) ---
 def generic_management_ui(category_name, sheet_name, display_col):
     st.subheader(f"Gestão de {category_name}")
     state_key = f'edit_{sheet_name}_id'
@@ -190,19 +194,13 @@ def generic_management_ui(category_name, sheet_name, display_col):
             st.rerun()
         
         df = get_sheet_data(sheet_name)
-        
         if df.empty:
-            st.info(f"Nenhum {category_name} encontrado.")
-            # Botão de refresh manual caso o usuário ache que tem dados
-            if st.button("🔄 Tentar carregar novamente"):
-                st.cache_data.clear()
-                st.rerun()
+            st.warning(f"Nenhum {category_name} encontrado.")
         else:
             for _, row in df.iterrows():
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
                 val_display = str(row.get(display_col, 'Sem Nome'))
                 c1.write(f"**{val_display}**")
-                
                 sid = int(row.get(id_col, 0))
                 
                 if c2.button("✏️", key=f"btn_edit_{sheet_name}_{sid}"):
@@ -225,8 +223,8 @@ def generic_management_ui(category_name, sheet_name, display_col):
         
         with st.form(f"form_{sheet_name}"):
             payload = {}
-            cols = EXPECTED_COLS.get(sheet_name)
-            for col in cols:
+            # Exibe todos os campos menos ID
+            for col in EXPECTED_COLS.get(sheet_name):
                 if col == id_col: continue
                 val = curr.get(col, "")
                 label = col.replace("_", " ").title()
@@ -249,20 +247,154 @@ def generic_management_ui(category_name, sheet_name, display_col):
             if st.form_submit_button("💾 Salvar"):
                 for k,v in payload.items():
                     if isinstance(v, (date, pd.Timestamp)): payload[k] = v.strftime('%Y-%m-%d')
-                
                 with st.spinner("Salvando..."):
                     if is_new: execute_crud_operation(sheet_name, data=payload, operation='insert')
                     else: execute_crud_operation(sheet_name, data=payload, id_value=st.session_state[state_key], operation='update')
-                
                 st.session_state[state_key] = None
                 st.success("Salvo!")
                 time.sleep(0.5)
                 st.rerun()
-        
         if st.button("Cancelar"):
             st.session_state[state_key] = None
             st.rerun()
 
+# --- UI ESPECÍFICA PARA PRESTADORES (COM CEP E VALIDAÇÃO) ---
+def provider_management_ui():
+    st.subheader("Gestão de Prestadores")
+    state_key = 'edit_prestador_id'
+    
+    if st.session_state[state_key] is None:
+        c_top, _ = st.columns([0.3, 0.7])
+        if c_top.button("➕ Novo Prestador"):
+            st.session_state[state_key] = 'NEW'
+            st.rerun()
+        
+        df = get_sheet_data('prestador')
+        if df.empty:
+            st.warning("Nenhum prestador encontrado.")
+        else:
+            for _, row in df.iterrows():
+                c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
+                c1.write(f"**{row.get('empresa', 'Sem Nome')}**")
+                sid = int(row.get('id_prestador', 0))
+                
+                if c2.button("✏️", key=f"btn_edit_prest_{sid}"):
+                    st.session_state[state_key] = sid
+                    st.rerun()
+                if c3.button("🗑️", key=f"btn_del_prest_{sid}"):
+                    with st.spinner("Excluindo..."):
+                        execute_crud_operation('prestador', id_value=sid, operation='delete')
+                    st.success("Excluído!")
+                    time.sleep(1)
+                    st.rerun()
+    else:
+        # FORMULÁRIO DO PRESTADOR
+        df = get_sheet_data('prestador')
+        is_new = st.session_state[state_key] == 'NEW'
+        curr = {}
+        if not is_new:
+            res = df[df['id_prestador'] == st.session_state[state_key]]
+            if not res.empty: curr = res.iloc[0].to_dict()
+
+        # Inicia variáveis para preenchimento automático
+        if 'prov_cep' not in st.session_state: st.session_state.prov_cep = str(curr.get('cep', ''))
+        if 'prov_end' not in st.session_state: st.session_state.prov_end = str(curr.get('endereco', ''))
+        if 'prov_cid' not in st.session_state: st.session_state.prov_cid = str(curr.get('cidade', ''))
+        if 'prov_bai' not in st.session_state: st.session_state.prov_bai = str(curr.get('bairro', ''))
+
+        with st.form("form_prestador"):
+            st.write("### Dados da Empresa")
+            empresa = st.text_input("Nome da Empresa (Obrigatório)*", value=curr.get('empresa', ''))
+            
+            c1, c2 = st.columns(2)
+            cnpj = c1.text_input("CNPJ", value=curr.get('cnpj', ''))
+            nome_prest = c2.text_input("Nome do Contato", value=curr.get('nome_prestador', ''))
+            
+            tel = st.text_input("Telefone", value=str(curr.get('telefone', '')))
+            
+            st.write("### Endereço")
+            cc1, cc2 = st.columns([0.4, 0.6])
+            
+            # Campo de CEP com funcionalidade de busca
+            cep_input = cc1.text_input("CEP (Somente Números)", value=curr.get('cep', ''))
+            
+            # Botão de busca fora do fluxo principal para injetar dados no form
+            # Nota: Em forms do Streamlit, botões internos recarregam a página.
+            # Vamos usar um submit secundário ou apenas instruir. 
+            # A melhor forma dentro de um form é processar tudo no final, 
+            # mas para preencher visualmente, precisamos de um container separado.
+            
+            # WORKAROUND PARA CEP DENTRO DO FORM: 
+            # O Streamlit não atualiza outros campos dinamicamente dentro de um st.form enquanto digita.
+            # Então faremos a lógica de CEP fora do form se quisermos interatividade, ou processamos na hora de salvar.
+            # Vou colocar o CEP e a busca ANTES do form principal para permitir o preenchimento.
+            
+        # --- BLOCO DE CEP FORA DO FORM PARA PERMITIR AUTO-FILL ---
+        st.info("Preencha o CEP e clique na lupa para buscar o endereço.")
+        c_cep, c_btn_cep = st.columns([0.4, 0.6])
+        input_cep_val = c_cep.text_input("Digite o CEP:", value=curr.get('cep', ''), key="viacep_input")
+        
+        if c_btn_cep.button("🔍 Buscar Endereço"):
+            data_cep = consultar_cep(input_cep_val)
+            if data_cep:
+                st.session_state.prov_end = data_cep.get('logradouro', '')
+                st.session_state.prov_bai = data_cep.get('bairro', '')
+                st.session_state.prov_cid = data_cep.get('localidade', '')
+                st.success("Endereço encontrado!")
+            else:
+                st.error("CEP não encontrado.")
+        
+        # --- FORMULÁRIO FINAL ---
+        with st.form("form_prestador_final"):
+            # Usa os valores do session_state (atualizados pelo CEP) ou do banco
+            end_val = st.session_state.prov_end if st.session_state.prov_end else curr.get('endereco', '')
+            bai_val = st.session_state.prov_bai if st.session_state.prov_bai else curr.get('bairro', '')
+            cid_val = st.session_state.prov_cid if st.session_state.prov_cid else curr.get('cidade', '')
+            
+            endereco = st.text_input("Endereço", value=end_val)
+            c_num, c_bai = st.columns([0.3, 0.7])
+            numero = c_num.text_input("Número", value=str(curr.get('numero', '')))
+            bairro = c_bai.text_input("Bairro", value=bai_val)
+            cidade = st.text_input("Cidade", value=cid_val)
+            
+            # E-MAIL REMOVIDO CONFORME SOLICITADO
+            
+            if st.form_submit_button("💾 Salvar Prestador"):
+                # 🟢 VALIDAÇÃO DE EMPRESA
+                if not empresa or empresa.strip() == "":
+                    st.error("Erro: O campo 'Nome da Empresa' é obrigatório.")
+                else:
+                    payload = {
+                        'empresa': empresa,
+                        'telefone': tel,
+                        'nome_prestador': nome_prest,
+                        'cnpj': cnpj,
+                        'email': "", # Salva vazio para manter compatibilidade com schema
+                        'cep': input_cep_val,
+                        'endereco': endereco,
+                        'numero': numero,
+                        'cidade': cidade,
+                        'bairro': bairro
+                    }
+                    
+                    with st.spinner("Salvando..."):
+                        if is_new: execute_crud_operation('prestador', data=payload, operation='insert')
+                        else: execute_crud_operation('prestador', data=payload, id_value=st.session_state[state_key], operation='update')
+                    
+                    st.session_state[state_key] = None
+                    # Limpa estados temporários
+                    for k in ['prov_cep', 'prov_end', 'prov_cid', 'prov_bai']:
+                        if k in st.session_state: del st.session_state[k]
+                        
+                    st.success("Salvo com sucesso!")
+                    time.sleep(0.5)
+                    st.rerun()
+
+        if st.button("Cancelar Edição"):
+            st.session_state[state_key] = None
+            st.rerun()
+
+# --- UI PARA SERVIÇOS ---
 def service_management_ui():
     st.subheader("Gestão de Serviços")
     state_key = 'edit_servico_id'
@@ -289,13 +421,9 @@ def service_management_ui():
             
             for _, row in df_serv.iterrows():
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
-                
-                data_str = ""
-                if 'data_servico_dt' in row and pd.notna(row['data_servico_dt']):
-                    data_str = row['data_servico_dt'].strftime('%d/%m/%Y')
-                
+                d_str = row['data_servico_dt'].strftime('%d/%m/%Y') if pd.notna(row.get('data_servico_dt')) else ""
                 val_display = str(row.get('nome_servico', 'Serviço'))
-                c1.write(f"**{val_display}** - {data_str}")
+                c1.write(f"**{val_display}** - {d_str}")
                 sid = int(row.get('id_servico', 0))
                 
                 if c2.button("✏️", key=f"btn_ed_s_{sid}"):
@@ -309,13 +437,11 @@ def service_management_ui():
                     st.rerun()
         else:
             st.info("Nenhum serviço registrado.")
-
     else:
         is_new = st.session_state[state_key] == 'NEW'
         curr = {}
         curr_id_v = 0
         curr_id_p = 0
-        
         if not is_new:
             res = df_serv[df_serv['id_servico'] == st.session_state[state_key]]
             if not res.empty:
@@ -325,12 +451,9 @@ def service_management_ui():
 
         with st.form("form_servico"):
             idx_v = 0
-            if curr_id_v in map_v.values():
-                idx_v = list(map_v.values()).index(curr_id_v)
-            
+            if curr_id_v in map_v.values(): idx_v = list(map_v.values()).index(curr_id_v)
             idx_p = 0
-            if curr_id_p in map_p.values():
-                idx_p = list(map_p.values()).index(curr_id_p)
+            if curr_id_p in map_p.values(): idx_p = list(map_p.values()).index(curr_id_p)
             
             opts_v = list(map_v.keys()) if map_v else ["Sem Veículos"]
             opts_p = list(map_p.keys()) if map_p else ["Sem Prestadores"]
@@ -502,7 +625,7 @@ def main():
         st.divider()
         if opcao == "Veículo": generic_management_ui("Veículo", "veiculo", "nome")
         elif opcao == "Serviço": service_management_ui()
-        elif opcao == "Prestador": generic_management_ui("Prestador", "prestador", "empresa")
+        elif opcao == "Prestador": provider_management_ui() # 🟢 UI NOVA
 
 if __name__ == '__main__':
     main()
