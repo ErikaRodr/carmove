@@ -14,7 +14,6 @@ import requests
 SHEET_ID = '1BNjgWhvEj8NbnGr4x7F42LW7QbQiG5kZ1FBhfr9Q-4g'
 PLANILHA_TITULO = 'Dados Automóvel'
 
-# Estrutura de Colunas
 EXPECTED_COLS = {
     'veiculo': ['id_veiculo', 'nome', 'placa', 'ano', 'valor_pago', 'data_compra'],
     'prestador': ['id_prestador', 'empresa', 'telefone', 'nome_prestador', 'cnpj', 'email', 'endereco', 'numero', 'cidade', 'bairro', 'cep'],
@@ -160,81 +159,74 @@ def get_full_service_data():
     return df_merged.sort_values(by='data_servico', ascending=False)
 
 # ==============================================================================
-# 4. INTERFACES (UI)
+# 4. INTERFACES (SEPARADAS E CORRIGIDAS)
 # ==============================================================================
 
-# --- UI VEÍCULOS ---
-def generic_management_ui(category_name, sheet_name, display_col):
-    st.subheader(f"Gestão de {category_name}")
-    state_key = f'edit_{sheet_name}_id'
-    id_col = f'id_{sheet_name}'
+# 🟢 UI EXCLUSIVA PARA VEÍCULOS
+def vehicle_management_ui():
+    st.subheader("Gestão de Veículos")
+    state_key = 'edit_veiculo_id'
     
     if st.session_state[state_key] is None:
         c_top, _ = st.columns([0.3, 0.7])
-        if c_top.button(f"➕ Novo {category_name}"):
+        if c_top.button("➕ Novo Veículo"):
             st.session_state[state_key] = 'NEW'
             st.rerun()
         
-        df = get_sheet_data(sheet_name)
+        df = get_sheet_data('veiculo')
         if df.empty:
-            st.warning(f"Nenhum {category_name} encontrado.")
+            st.warning("Nenhum Veículo encontrado.")
         else:
             for _, row in df.iterrows():
                 c1, c2, c3 = st.columns([0.7, 0.15, 0.15])
-                val_display = str(row.get(display_col, 'Sem Nome'))
+                val_display = str(row.get('nome', 'Sem Nome'))
                 c1.write(f"**{val_display}**")
-                sid = int(row.get(id_col, 0))
+                sid = int(row.get('id_veiculo', 0))
                 
-                if c2.button("✏️", key=f"btn_edit_{sheet_name}_{sid}"):
+                if c2.button("✏️", key=f"btn_edit_veic_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
                 
-                if c3.button("🗑️", key=f"btn_del_{sheet_name}_{sid}"):
+                if c3.button("🗑️", key=f"btn_del_veic_{sid}"):
                     with st.spinner("Excluindo..."):
-                        execute_crud_operation(sheet_name, id_value=sid, operation='delete')
+                        execute_crud_operation('veiculo', id_value=sid, operation='delete')
                     st.success("Excluído!")
                     time.sleep(1)
                     st.rerun()
     else:
-        df = get_sheet_data(sheet_name)
+        df = get_sheet_data('veiculo')
         is_new = st.session_state[state_key] == 'NEW'
         curr = {}
         if not is_new:
-            res = df[df[id_col] == st.session_state[state_key]]
+            res = df[df['id_veiculo'] == st.session_state[state_key]]
             if not res.empty: curr = res.iloc[0].to_dict()
         
-        with st.form(f"form_{sheet_name}"):
-            payload = {}
-            for col in EXPECTED_COLS.get(sheet_name):
-                if col == id_col: continue
-                val = curr.get(col, "")
-                label = col.replace("_", " ").title()
-
-                if "data" in col:
-                    try: d = pd.to_datetime(val) if val else date.today()
-                    except: d = date.today()
-                    payload[col] = st.date_input(label, value=d, format="DD/MM/YYYY")
-                elif any(x in col for x in ["telefone", "numero", "ano", "km"]):
-                    try: n_val = int(float(val)) if val else 0
-                    except: n_val = 0
-                    payload[col] = st.number_input(label, value=n_val, step=1, format="%d")
-                elif "valor" in col:
-                    try: n_val = float(val) if val else 0.0
-                    except: n_val = 0.0
-                    payload[col] = st.number_input(label, value=n_val, format="%.2f")
-                else:
-                    payload[col] = st.text_input(label, value=str(val))
+        with st.form("form_veiculo"):
+            nome = st.text_input("Nome do Veículo (Obrigatório)*", value=curr.get('nome', ''))
+            placa = st.text_input("Placa", value=curr.get('placa', ''))
+            c1, c2 = st.columns(2)
+            ano = c1.number_input("Ano", value=int(curr.get('ano', 2020)), step=1, format="%d")
+            valor = c2.number_input("Valor Pago (R$)", value=float(curr.get('valor_pago', 0.0)), format="%.2f")
             
-            if st.form_submit_button("💾 Salvar"):
-                # 🟢 VALIDAÇÃO DE VEÍCULO
-                if not payload.get('nome'):
-                    st.error("Erro: O campo 'Nome' é obrigatório!")
+            try: d_val = pd.to_datetime(curr.get('data_compra')) if curr.get('data_compra') else date.today()
+            except: d_val = date.today()
+            data_c = st.date_input("Data de Compra", value=d_val, format="DD/MM/YYYY")
+            
+            if st.form_submit_button("💾 Salvar Veículo"):
+                # 🟢 VALIDAÇÃO VEÍCULO
+                if not nome or nome.strip() == "":
+                    st.error("Erro: O Nome do Veículo é obrigatório.")
                 else:
-                    for k,v in payload.items():
-                        if isinstance(v, (date, pd.Timestamp)): payload[k] = v.strftime('%Y-%m-%d')
+                    payload = {
+                        'nome': nome,
+                        'placa': placa,
+                        'ano': int(ano),
+                        'valor_pago': float(valor),
+                        'data_compra': data_c.strftime('%Y-%m-%d')
+                    }
                     with st.spinner("Salvando..."):
-                        if is_new: execute_crud_operation(sheet_name, data=payload, operation='insert')
-                        else: execute_crud_operation(sheet_name, data=payload, id_value=st.session_state[state_key], operation='update')
+                        if is_new: execute_crud_operation('veiculo', data=payload, operation='insert')
+                        else: execute_crud_operation('veiculo', data=payload, id_value=st.session_state[state_key], operation='update')
                     st.session_state[state_key] = None
                     st.success("Salvo!")
                     time.sleep(0.5)
@@ -243,7 +235,7 @@ def generic_management_ui(category_name, sheet_name, display_col):
             st.session_state[state_key] = None
             st.rerun()
 
-# --- UI PRESTADORES (CORRIGIDA) ---
+# 🟢 UI EXCLUSIVA PARA PRESTADORES
 def provider_management_ui():
     st.subheader("Gestão de Prestadores")
     state_key = 'edit_prestador_id'
@@ -284,6 +276,7 @@ def provider_management_ui():
         if 'prov_bai' not in st.session_state: st.session_state.prov_bai = str(curr.get('bairro', ''))
         if 'prov_cid' not in st.session_state: st.session_state.prov_cid = str(curr.get('cidade', ''))
 
+        # Busca CEP fora do form
         st.markdown("##### 📍 Endereço Automático")
         c_cep, c_btn = st.columns([0.4, 0.6])
         input_cep = c_cep.text_input("CEP:", value=str(curr.get('cep', '')), key="input_cep_search")
@@ -298,14 +291,12 @@ def provider_management_ui():
             else:
                 st.error("CEP não encontrado.")
 
-        # --- FORMULÁRIO MANUAL (SEM LOOP) ---
         with st.form("form_prestador_manual"):
             st.markdown("##### 🏢 Dados da Empresa")
             val_empresa = st.text_input("Nome da Empresa (Obrigatório)*", value=curr.get('empresa', ''))
             
             c1, c2 = st.columns(2)
             val_cnpj = c1.text_input("CNPJ", value=curr.get('cnpj', ''))
-            # 🟢 MUDANÇA DE NOME
             val_contato = c2.text_input("Nome do Prestador", value=curr.get('nome_prestador', ''))
             val_tel = st.text_input("Telefone", value=str(curr.get('telefone', '')))
             
@@ -318,7 +309,7 @@ def provider_management_ui():
             val_cid = st.text_input("Cidade", value=st.session_state.prov_cid)
             
             if st.form_submit_button("💾 Salvar Prestador"):
-                # 🟢 VALIDAÇÃO DE EMPRESA
+                # 🟢 VALIDAÇÃO PRESTADOR
                 if not val_empresa or val_empresa.strip() == "":
                     st.error("❌ Erro: O campo 'Nome da Empresa' é obrigatório!")
                 else:
@@ -350,7 +341,7 @@ def provider_management_ui():
             st.session_state[state_key] = None
             st.rerun()
 
-# --- UI SERVIÇOS ---
+# 🟢 UI EXCLUSIVA PARA SERVIÇOS
 def service_management_ui():
     st.subheader("Gestão de Serviços")
     state_key = 'edit_servico_id'
@@ -398,7 +389,6 @@ def service_management_ui():
         curr = {}
         curr_id_v = 0
         curr_id_p = 0
-        
         if not is_new:
             res = df_serv[df_serv['id_servico'] == st.session_state[state_key]]
             if not res.empty:
@@ -436,11 +426,11 @@ def service_management_ui():
             if st.form_submit_button("💾 Salvar Serviço"):
                 if not map_v or not map_p:
                     st.error("Não é possível salvar sem Veículo/Prestador.")
-                # 🟢 VALIDAÇÃO DE SERVIÇO
+                # 🟢 VALIDAÇÃO SERVIÇO
                 elif not nome_s or nome_s.strip() == "":
                     st.error("❌ Erro: A Descrição do Serviço é obrigatória!")
                 elif valor <= 0:
-                    st.error("❌ Erro: O Valor (R$) deve ser maior que zero!")
+                    st.error("❌ Erro: O Valor deve ser maior que zero.")
                 else:
                     dt_venc = data_s + timedelta(days=int(garantia))
                     payload = {
@@ -585,10 +575,10 @@ def main():
 
     # ABA MANUAL
     with tab_manual:
-        # CORREÇÃO DEFINITIVA DO 'SE': Chave única para forçar re-render
-        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="menu_principal_v2")
+        # CORREÇÃO: Chave nova "menu_principal_v3" para apagar o "se" da memória
+        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="menu_principal_v3")
         st.divider()
-        if opcao == "Veículo": generic_management_ui("Veículo", "veiculo", "nome")
+        if opcao == "Veículo": vehicle_management_ui() # 🟢 FUNÇÃO CORRETA PARA VEÍCULO
         elif opcao == "Serviço": service_management_ui()
         elif opcao == "Prestador": provider_management_ui()
 
