@@ -35,9 +35,10 @@ def get_sheet_data(sheet_name, force_refresh=False):
         st.cache_data.clear()
     return _read_data_cached(sheet_name)
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=15)
 def _read_data_cached(sheet_name):
-    for i in range(3):
+    # Retry logic reforçado para evitar tabelas "vazias" por erro de rede
+    for i in range(4):
         try:
             gc = get_gspread_client()
             sh = gc.open_by_key(SHEET_ID) if SHEET_ID else gc.open(PLANILHA_TITULO)
@@ -53,7 +54,8 @@ def _read_data_cached(sheet_name):
                 df[id_col] = pd.to_numeric(df[id_col], errors='coerce').fillna(0).astype(int)
             return df
         except Exception:
-            time.sleep(0.5)
+            time.sleep(0.5 + (i * 0.2))
+            
     return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
 
 def write_sheet_data(sheet_name, df_new):
@@ -79,7 +81,7 @@ def write_sheet_data(sheet_name, df_new):
         return False
 
 # ==============================================================================
-# 2. CRUD E UTILITÁRIOS
+# 2. CRUD
 # ==============================================================================
 
 def execute_crud_operation(sheet_name, data=None, id_value=None, operation='insert'):
@@ -159,14 +161,15 @@ def get_full_service_data():
     return df_merged.sort_values(by='data_servico', ascending=False)
 
 # ==============================================================================
-# 4. INTERFACES INDIVIDUAIS (GARANTE TÍTULOS CORRETOS)
+# 4. INTERFACES (AGORA TOTALMENTE SEPARADAS)
 # ==============================================================================
 
-# 🟢 1. GESTÃO DE VEÍCULOS
-def vehicle_management_ui():
+# 🟢 1. VEÍCULOS
+def vehicle_ui():
     st.subheader("Gestão de Veículos") # Título Fixo
     state_key = 'edit_veiculo_id'
     
+    # LISTA
     if st.session_state[state_key] is None:
         c_top, _ = st.columns([0.3, 0.7])
         if c_top.button("➕ Novo Veículo"):
@@ -183,16 +186,16 @@ def vehicle_management_ui():
                 c1.write(f"**{val_display}**")
                 sid = int(row.get('id_veiculo', 0))
                 
-                if c2.button("✏️", key=f"btn_edit_veic_{sid}"):
+                if c2.button("✏️", key=f"btn_ed_v_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
-                
-                if c3.button("🗑️", key=f"btn_del_veic_{sid}"):
+                if c3.button("🗑️", key=f"btn_del_v_{sid}"):
                     with st.spinner("Excluindo..."):
                         execute_crud_operation('veiculo', id_value=sid, operation='delete')
                     st.success("Excluído!")
                     time.sleep(1)
                     st.rerun()
+    # FORMULÁRIO
     else:
         df = get_sheet_data('veiculo')
         is_new = st.session_state[state_key] == 'NEW'
@@ -201,7 +204,7 @@ def vehicle_management_ui():
             res = df[df['id_veiculo'] == st.session_state[state_key]]
             if not res.empty: curr = res.iloc[0].to_dict()
         
-        with st.form("form_veiculo"):
+        with st.form("form_veiculo_unico"):
             nome = st.text_input("Nome do Veículo (Obrigatório)*", value=curr.get('nome', ''))
             placa = st.text_input("Placa", value=curr.get('placa', ''))
             c1, c2 = st.columns(2)
@@ -213,7 +216,6 @@ def vehicle_management_ui():
             data_c = st.date_input("Data de Compra", value=d_val, format="DD/MM/YYYY")
             
             if st.form_submit_button("💾 Salvar Veículo"):
-                # 🟢 VALIDAÇÃO VEÍCULO
                 if not nome or nome.strip() == "":
                     st.error("Erro: O Nome do Veículo é obrigatório.")
                 else:
@@ -235,11 +237,12 @@ def vehicle_management_ui():
             st.session_state[state_key] = None
             st.rerun()
 
-# 🟢 2. GESTÃO DE PRESTADORES
-def provider_management_ui():
-    st.subheader("Gestão de Prestadores") # Título Fixo e Correto
+# 🟢 2. PRESTADORES
+def provider_ui():
+    st.subheader("Gestão de Prestadores") # Título Fixo
     state_key = 'edit_prestador_id'
     
+    # LISTA
     if st.session_state[state_key] is None:
         c_top, _ = st.columns([0.3, 0.7])
         if c_top.button("➕ Novo Prestador"):
@@ -255,15 +258,16 @@ def provider_management_ui():
                 c1.write(f"**{row.get('empresa', 'Sem Nome')}**")
                 sid = int(row.get('id_prestador', 0))
                 
-                if c2.button("✏️", key=f"btn_edit_prest_{sid}"):
+                if c2.button("✏️", key=f"btn_ed_p_{sid}"):
                     st.session_state[state_key] = sid
                     st.rerun()
-                if c3.button("🗑️", key=f"btn_del_prest_{sid}"):
+                if c3.button("🗑️", key=f"btn_del_p_{sid}"):
                     with st.spinner("Excluindo..."):
                         execute_crud_operation('prestador', id_value=sid, operation='delete')
                     st.success("Excluído!")
                     time.sleep(1)
                     st.rerun()
+    # FORMULÁRIO
     else:
         df = get_sheet_data('prestador')
         is_new = st.session_state[state_key] == 'NEW'
@@ -276,6 +280,7 @@ def provider_management_ui():
         if 'prov_bai' not in st.session_state: st.session_state.prov_bai = str(curr.get('bairro', ''))
         if 'prov_cid' not in st.session_state: st.session_state.prov_cid = str(curr.get('cidade', ''))
 
+        # CEP Fora do Form
         st.markdown("##### 📍 Endereço Automático")
         c_cep, c_btn = st.columns([0.4, 0.6])
         input_cep = c_cep.text_input("CEP:", value=str(curr.get('cep', '')), key="input_cep_search")
@@ -290,12 +295,13 @@ def provider_management_ui():
             else:
                 st.error("CEP não encontrado.")
 
-        with st.form("form_prestador_manual"):
+        with st.form("form_prestador_unico"):
             st.markdown("##### 🏢 Dados da Empresa")
             val_empresa = st.text_input("Nome da Empresa (Obrigatório)*", value=curr.get('empresa', ''))
             
             c1, c2 = st.columns(2)
             val_cnpj = c1.text_input("CNPJ", value=curr.get('cnpj', ''))
+            # 🟢 Correção de Label
             val_contato = c2.text_input("Nome do Prestador", value=curr.get('nome_prestador', ''))
             val_tel = st.text_input("Telefone", value=str(curr.get('telefone', '')))
             
@@ -308,7 +314,6 @@ def provider_management_ui():
             val_cid = st.text_input("Cidade", value=st.session_state.prov_cid)
             
             if st.form_submit_button("💾 Salvar Prestador"):
-                # 🟢 VALIDAÇÃO PRESTADOR
                 if not val_empresa or val_empresa.strip() == "":
                     st.error("❌ Erro: O campo 'Nome da Empresa' é obrigatório!")
                 else:
@@ -330,6 +335,7 @@ def provider_management_ui():
                         else: execute_crud_operation('prestador', data=payload, id_value=st.session_state[state_key], operation='update')
                     
                     st.session_state[state_key] = None
+                    # Limpa variáveis auxiliares
                     for k in ['prov_end', 'prov_bai', 'prov_cid']: 
                         if k in st.session_state: del st.session_state[k]
                     st.success("Salvo com sucesso!")
@@ -340,8 +346,8 @@ def provider_management_ui():
             st.session_state[state_key] = None
             st.rerun()
 
-# 🟢 3. GESTÃO DE SERVIÇOS
-def service_management_ui():
+# 🟢 3. SERVIÇOS
+def service_ui():
     st.subheader("Gestão de Serviços") # Título Fixo
     state_key = 'edit_servico_id'
     
@@ -352,6 +358,7 @@ def service_management_ui():
     map_v = {f"{r['nome']} ({r.get('placa','S/P')})": int(r['id_veiculo']) for _, r in df_v.iterrows()} if not df_v.empty else {}
     map_p = {f"{r['empresa']}": int(r['id_prestador']) for _, r in df_p.iterrows()} if not df_p.empty else {}
     
+    # LISTA
     if st.session_state[state_key] is None:
         c_btn, _ = st.columns([0.3, 0.7])
         if c_btn.button("➕ Novo Serviço"):
@@ -383,12 +390,13 @@ def service_management_ui():
                     st.rerun()
         else:
             st.info("Nenhum serviço registrado.")
+    
+    # FORMULÁRIO
     else:
         is_new = st.session_state[state_key] == 'NEW'
         curr = {}
         curr_id_v = 0
         curr_id_p = 0
-        
         if not is_new:
             res = df_serv[df_serv['id_servico'] == st.session_state[state_key]]
             if not res.empty:
@@ -396,7 +404,7 @@ def service_management_ui():
                 curr_id_v = int(curr.get('id_veiculo', 0))
                 curr_id_p = int(curr.get('id_prestador', 0))
 
-        with st.form("form_servico"):
+        with st.form("form_servico_unico"):
             idx_v = 0
             if curr_id_v in map_v.values(): idx_v = list(map_v.values()).index(curr_id_v)
             idx_p = 0
@@ -426,7 +434,7 @@ def service_management_ui():
             if st.form_submit_button("💾 Salvar Serviço"):
                 if not map_v or not map_p:
                     st.error("Não é possível salvar sem Veículo/Prestador.")
-                # 🟢 VALIDAÇÃO SERVIÇO
+                # 🟢 VALIDAÇÕES SERVIÇO
                 elif not nome_s or nome_s.strip() == "":
                     st.error("❌ Erro: A Descrição do Serviço é obrigatória!")
                 elif valor <= 0:
@@ -575,12 +583,12 @@ def main():
 
     # ABA MANUAL
     with tab_manual:
-        # CORREÇÃO: Chave "nav_main_final" para resetar cache do menu e mostrar "Serviço"
-        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="nav_main_final")
+        # CORREÇÃO: Chave nova "nav_master_reset_v9" para limpar cache visual do menu
+        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="nav_master_reset_v9")
         st.divider()
-        if opcao == "Veículo": vehicle_management_ui() # 🟢 FUNÇÃO CORRETA PARA VEÍCULO
-        elif opcao == "Serviço": service_management_ui()
-        elif opcao == "Prestador": provider_management_ui()
+        if opcao == "Veículo": vehicle_ui() # 🟢 FUNÇÃO CORRETA VEÍCULO
+        elif opcao == "Serviço": service_ui() # 🟢 FUNÇÃO CORRETA SERVIÇO
+        elif opcao == "Prestador": provider_ui() # 🟢 FUNÇÃO CORRETA PRESTADOR
 
 if __name__ == '__main__':
     main()
