@@ -4,6 +4,7 @@ from datetime import date, timedelta
 import time
 import gspread
 import numpy as np
+import altair as alt
 import requests
 
 # ==============================================================================
@@ -35,9 +36,9 @@ def get_sheet_data(sheet_name, force_refresh=False):
         st.cache_data.clear()
     return _read_data_cached(sheet_name)
 
-@st.cache_data(ttl=10) # Cache curto para evitar inconsistência
+@st.cache_data(ttl=10)
 def _read_data_cached(sheet_name):
-    # Tenta ler 3 vezes (Retry Logic)
+    # Tenta ler 3 vezes (Retry Logic) para evitar erros de conexão
     for i in range(3):
         try:
             gc = get_gspread_client()
@@ -86,7 +87,6 @@ def write_sheet_data(sheet_name, df_new):
 # ==============================================================================
 
 def execute_crud_operation(sheet_name, data=None, id_value=None, operation='insert'):
-    # Lê forçando atualização (bypass cache) para garantir IDs corretos
     df = get_sheet_data(sheet_name, force_refresh=True)
     id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
 
@@ -112,7 +112,6 @@ def execute_crud_operation(sheet_name, data=None, id_value=None, operation='inse
         return write_sheet_data(sheet_name, df_updated)
 
 def consultar_cep(cep):
-    """Consulta API ViaCEP"""
     cep_limpo = str(cep).replace("-", "").replace(".", "").strip()
     if len(cep_limpo) == 8:
         try:
@@ -238,17 +237,14 @@ def generic_management_ui(category_name, sheet_name, display_col):
                 st.success("Salvo!")
                 time.sleep(0.5)
                 st.rerun()
-        
         if st.button("Cancelar"):
             st.session_state[state_key] = None
             st.rerun()
 
-# --- UI ESPECÍFICA PARA PRESTADORES (CORRIGIDA: SEM DUPLICAÇÃO) ---
 def provider_management_ui():
     st.subheader("Gestão de Prestadores")
     state_key = 'edit_prestador_id'
     
-    # LISTA
     if st.session_state[state_key] is None:
         c_top, _ = st.columns([0.3, 0.7])
         if c_top.button("➕ Novo Prestador"):
@@ -273,8 +269,6 @@ def provider_management_ui():
                     st.success("Excluído!")
                     time.sleep(1)
                     st.rerun()
-    
-    # FORMULÁRIO (MANUAL, SEM LOOP, SEM DUPLICAÇÃO)
     else:
         df = get_sheet_data('prestador')
         is_new = st.session_state[state_key] == 'NEW'
@@ -283,12 +277,10 @@ def provider_management_ui():
             res = df[df['id_prestador'] == st.session_state[state_key]]
             if not res.empty: curr = res.iloc[0].to_dict()
 
-        # Inicializa session_state para busca de CEP se não existir
         if 'prov_end' not in st.session_state: st.session_state.prov_end = str(curr.get('endereco', ''))
         if 'prov_bai' not in st.session_state: st.session_state.prov_bai = str(curr.get('bairro', ''))
         if 'prov_cid' not in st.session_state: st.session_state.prov_cid = str(curr.get('cidade', ''))
 
-        # --- ÁREA DE BUSCA DE CEP (FORA DO FORM PARA FUNCIONAR) ---
         st.markdown("##### 📍 Endereço Automático")
         c_cep, c_btn = st.columns([0.4, 0.6])
         input_cep = c_cep.text_input("CEP:", value=str(curr.get('cep', '')), key="input_cep_search")
@@ -303,32 +295,24 @@ def provider_management_ui():
             else:
                 st.error("CEP não encontrado.")
 
-        # --- FORMULÁRIO PRINCIPAL ---
         with st.form("form_prestador_manual"):
             st.markdown("##### 🏢 Dados da Empresa")
-            
-            # Campo Empresa com Validação
             val_empresa = st.text_input("Nome da Empresa (Obrigatório)*", value=curr.get('empresa', ''))
             
             c1, c2 = st.columns(2)
             val_cnpj = c1.text_input("CNPJ", value=curr.get('cnpj', ''))
             val_contato = c2.text_input("Nome do Contato", value=curr.get('nome_prestador', ''))
-            
             val_tel = st.text_input("Telefone", value=str(curr.get('telefone', '')))
             
             st.markdown("##### 🏠 Detalhes do Endereço")
-            # Usa Session State para pegar o valor vindo do botão Buscar CEP
             val_end = st.text_input("Endereço", value=st.session_state.prov_end)
             
             cn, cb = st.columns([0.3, 0.7])
             val_num = cn.text_input("Número", value=str(curr.get('numero', '')))
             val_bai = cb.text_input("Bairro", value=st.session_state.prov_bai)
-            
             val_cid = st.text_input("Cidade", value=st.session_state.prov_cid)
             
-            # Botão de Salvar
             if st.form_submit_button("💾 Salvar Prestador"):
-                # VALIDAÇÃO OBRIGATÓRIA
                 if not val_empresa or val_empresa.strip() == "":
                     st.error("❌ Erro: O campo 'Nome da Empresa' é obrigatório!")
                 else:
@@ -337,7 +321,7 @@ def provider_management_ui():
                         'telefone': val_tel,
                         'nome_prestador': val_contato,
                         'cnpj': val_cnpj,
-                        'email': "", # E-mail removido visualmente, mas salvo vazio no banco
+                        'email': "", 
                         'cep': input_cep,
                         'endereco': val_end,
                         'numero': val_num,
@@ -350,10 +334,8 @@ def provider_management_ui():
                         else: execute_crud_operation('prestador', data=payload, id_value=st.session_state[state_key], operation='update')
                     
                     st.session_state[state_key] = None
-                    # Limpa auxiliares
                     for k in ['prov_end', 'prov_bai', 'prov_cid']: 
                         if k in st.session_state: del st.session_state[k]
-                        
                     st.success("Salvo com sucesso!")
                     time.sleep(0.5)
                     st.rerun()
@@ -409,7 +391,6 @@ def service_management_ui():
         curr = {}
         curr_id_v = 0
         curr_id_p = 0
-        
         if not is_new:
             res = df_serv[df_serv['id_servico'] == st.session_state[state_key]]
             if not res.empty:
@@ -473,10 +454,6 @@ def service_management_ui():
         if st.button("Cancelar"):
             st.session_state[state_key] = None
             st.rerun()
-
-# ==============================================================================
-# 5. MAIN
-# ==============================================================================
 
 def run_auto_test_data():
     st.info("Simulando...")
@@ -573,7 +550,7 @@ def main():
             df_full['Ano'] = df_full['data_servico'].dt.year
             c1, c2 = st.columns(2)
             
-            v_sel = c1.selectbox("Filtrar Veículo:", ["Todos"] + sorted(list(df_full['nome'].unique())), key="h_v")
+            v_sel = c1.selectbox("Filtrar Veículo:", ["Todos"] + sorted(list(df_full['nome'].astype(str).unique())), key="h_v")
             y_sel = c2.selectbox("Filtrar Ano:", ["Todos"] + sorted(list(df_full['Ano'].dropna().unique().astype(int))), key="h_y")
             
             df_filt = df_full.copy()
@@ -591,8 +568,7 @@ def main():
 
     # ABA MANUAL
     with tab_manual:
-        # CORREÇÃO: Chave única no menu para limpar cache visual do "se"
-        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="menu_principal_novo")
+        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="menu_nav_reboot")
         st.divider()
         if opcao == "Veículo": generic_management_ui("Veículo", "veiculo", "nome")
         elif opcao == "Serviço": service_management_ui()
