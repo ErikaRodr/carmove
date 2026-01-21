@@ -35,7 +35,7 @@ def get_sheet_data(sheet_name, force_refresh=False):
         st.cache_data.clear()
     return _read_data_cached(sheet_name)
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=10)
 def _read_data_cached(sheet_name):
     # Retry logic reforçado
     for i in range(4):
@@ -160,12 +160,12 @@ def get_full_service_data():
     return df_merged.sort_values(by='data_servico', ascending=False)
 
 # ==============================================================================
-# 4. INTERFACES ESPECÍFICAS (PARA GARANTIR TÍTULOS CORRETOS)
+# 4. INTERFACES (SEPARADAS E ISOLADAS)
 # ==============================================================================
 
-# 🟢 1. VEÍCULOS
+# 🟢 VEÍCULOS
 def vehicle_ui():
-    st.subheader("Gestão de Veículos")
+    st.header("Gestão de Veículos") # Header Fixo
     state_key = 'edit_veiculo_id'
     
     if st.session_state[state_key] is None:
@@ -203,6 +203,7 @@ def vehicle_ui():
             if not res.empty: curr = res.iloc[0].to_dict()
         
         with st.form("form_veiculo"):
+            st.write("### Dados do Veículo")
             nome = st.text_input("Nome do Veículo (Obrigatório)*", value=curr.get('nome', ''))
             placa = st.text_input("Placa", value=curr.get('placa', ''))
             c1, c2 = st.columns(2)
@@ -235,10 +236,9 @@ def vehicle_ui():
             st.session_state[state_key] = None
             st.rerun()
 
-# 🟢 2. PRESTADORES
+# 🟢 PRESTADORES
 def provider_ui():
-    # AQUI ESTÁ A CORREÇÃO DO TÍTULO "Gestão de barbas"
-    st.subheader("Gestão de Prestadores") 
+    st.header("Gestão de Prestadores") # Header Fixo
     state_key = 'edit_prestador_id'
     
     if st.session_state[state_key] is None:
@@ -342,7 +342,7 @@ def provider_ui():
 
 # 🟢 3. SERVIÇOS
 def service_ui():
-    st.subheader("Gestão de Serviços")
+    st.header("Gestão de Serviços") # Header Fixo
     state_key = 'edit_servico_id'
     
     df_v = get_sheet_data('veiculo')
@@ -461,6 +461,12 @@ def service_ui():
 # 5. MAIN
 # ==============================================================================
 
+# Função auxiliar para limpar estados ao trocar de aba (Previne "bagunça")
+def reset_states():
+    if 'edit_veiculo_id' in st.session_state: st.session_state['edit_veiculo_id'] = None
+    if 'edit_prestador_id' in st.session_state: st.session_state['edit_prestador_id'] = None
+    if 'edit_servico_id' in st.session_state: st.session_state['edit_servico_id'] = None
+
 def run_auto_test_data():
     st.info("Simulando...")
     execute_crud_operation('veiculo', data={'nome': 'Civic Teste', 'placa': 'TST-0001', 'ano': 2023, 'valor_pago': 150000, 'data_compra': '2023-01-01'}, operation='insert')
@@ -493,6 +499,8 @@ def run_auto_test_data():
 
 def main():
     st.set_page_config(page_title="Controle Automotivo", layout="wide")
+    
+    # Inicializa estados
     for key in ['edit_veiculo_id', 'edit_prestador_id', 'edit_servico_id']:
         if key not in st.session_state: st.session_state[key] = None
 
@@ -574,11 +582,10 @@ def main():
 
     # ABA MANUAL
     with tab_manual:
-        # Chave "nav_final_fix" para limpar qualquer cache visual antigo
-        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="nav_final_fix")
+        # A Mágica: "on_change=reset_states" limpa qualquer form aberto ao trocar de aba
+        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="navigation_radio", on_change=reset_states)
         st.divider()
         
-        # CHAMANDO AS FUNÇÕES CORRETAS E SEPARADAS
         if opcao == "Veículo":
             vehicle_ui()
         elif opcao == "Serviço":
