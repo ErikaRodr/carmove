@@ -213,6 +213,7 @@ def vehicle_management_ui():
             data_c = st.date_input("Data de Compra", value=d_val, format="DD/MM/YYYY")
             
             if st.form_submit_button("💾 Salvar Veículo"):
+                # 🟢 VALIDAÇÃO VEÍCULO
                 if not nome or nome.strip() == "":
                     st.error("Erro: O Nome do Veículo é obrigatório.")
                 else:
@@ -307,6 +308,7 @@ def provider_management_ui():
             val_cid = st.text_input("Cidade", value=st.session_state.prov_cid)
             
             if st.form_submit_button("💾 Salvar Prestador"):
+                # 🟢 VALIDAÇÃO PRESTADOR
                 if not val_empresa or val_empresa.strip() == "":
                     st.error("❌ Erro: O campo 'Nome da Empresa' é obrigatório!")
                 else:
@@ -424,6 +426,7 @@ def service_management_ui():
             if st.form_submit_button("💾 Salvar Serviço"):
                 if not map_v or not map_p:
                     st.error("Não é possível salvar sem Veículo/Prestador.")
+                # 🟢 VALIDAÇÃO SERVIÇO
                 elif not nome_s or nome_s.strip() == "":
                     st.error("❌ Erro: A Descrição do Serviço é obrigatória!")
                 elif valor <= 0:
@@ -575,7 +578,7 @@ def main():
         # CORREÇÃO: Chave "nav_main_final" para resetar cache do menu e mostrar "Serviço"
         opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="nav_main_final")
         st.divider()
-        if opcao == "Veículo": vehicle_management_ui()
+        if opcao == "Veículo": vehicle_management_ui() # 🟢 FUNÇÃO CORRETA PARA VEÍCULO
         elif opcao == "Serviço": service_management_ui()
         elif opcao == "Prestador": provider_management_ui()
 
