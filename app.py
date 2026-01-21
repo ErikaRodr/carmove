@@ -4,8 +4,7 @@ from datetime import date, timedelta
 import time
 import gspread
 import numpy as np
-import altair as alt
-import requests # 🟢 NOVA IMPORTAÇÃO PARA O CEP
+import requests
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO E CONEXÃO
@@ -17,7 +16,6 @@ PLANILHA_TITULO = 'Dados Automóvel'
 # Estrutura de Colunas
 EXPECTED_COLS = {
     'veiculo': ['id_veiculo', 'nome', 'placa', 'ano', 'valor_pago', 'data_compra'],
-    # Nota: O campo email existe no banco para compatibilidade, mas não será mostrado no form
     'prestador': ['id_prestador', 'empresa', 'telefone', 'nome_prestador', 'cnpj', 'email', 'endereco', 'numero', 'cidade', 'bairro', 'cep'],
     'servico': ['id_servico', 'id_veiculo', 'id_prestador', 'nome_servico', 'data_servico', 'garantia_dias', 'valor', 'km_realizado', 'km_proxima_revisao', 'registro', 'data_vencimento']
 }
@@ -37,9 +35,9 @@ def get_sheet_data(sheet_name, force_refresh=False):
         st.cache_data.clear()
     return _read_data_cached(sheet_name)
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=10) # Cache curto para evitar inconsistência
 def _read_data_cached(sheet_name):
-    # Retry logic (3 tentativas)
+    # Tenta ler 3 vezes (Retry Logic)
     for i in range(3):
         try:
             gc = get_gspread_client()
@@ -57,22 +55,9 @@ def _read_data_cached(sheet_name):
             
             return df
         except Exception:
-            time.sleep(0.5 + (i * 0.2))
+            time.sleep(0.5)
             
     return pd.DataFrame(columns=EXPECTED_COLS.get(sheet_name, []))
-
-def get_data(sheet_name, filter_col=None, filter_value=None):
-    df = get_sheet_data(sheet_name)
-    if df.empty: return df
-    if filter_col and filter_value is not None:
-        try:
-            if str(filter_col).startswith('id_'):
-                df[filter_col] = pd.to_numeric(df[filter_col], errors='coerce').fillna(0).astype(int)
-                filter_value = int(filter_value)
-            return df[df[filter_col] == filter_value]
-        except:
-            return pd.DataFrame(columns=df.columns)
-    return df
 
 def write_sheet_data(sheet_name, df_new):
     try:
@@ -101,6 +86,7 @@ def write_sheet_data(sheet_name, df_new):
 # ==============================================================================
 
 def execute_crud_operation(sheet_name, data=None, id_value=None, operation='insert'):
+    # Lê forçando atualização (bypass cache) para garantir IDs corretos
     df = get_sheet_data(sheet_name, force_refresh=True)
     id_col = f'id_{sheet_name}' if sheet_name in ('veiculo', 'prestador') else 'id_servico'
 
@@ -127,10 +113,10 @@ def execute_crud_operation(sheet_name, data=None, id_value=None, operation='inse
 
 def consultar_cep(cep):
     """Consulta API ViaCEP"""
-    cep = str(cep).replace("-", "").replace(".", "").strip()
-    if len(cep) == 8:
+    cep_limpo = str(cep).replace("-", "").replace(".", "").strip()
+    if len(cep_limpo) == 8:
         try:
-            response = requests.get(f"https://viacep.com.br/ws/{cep}/json/", timeout=3)
+            response = requests.get(f"https://viacep.com.br/ws/{cep_limpo}/json/", timeout=3)
             if response.status_code == 200:
                 data = response.json()
                 if "erro" not in data:
@@ -181,7 +167,6 @@ def get_full_service_data():
 # 4. INTERFACES (UI)
 # ==============================================================================
 
-# --- UI PARA VEÍCULOS (GENÉRICA) ---
 def generic_management_ui(category_name, sheet_name, display_col):
     st.subheader(f"Gestão de {category_name}")
     state_key = f'edit_{sheet_name}_id'
@@ -223,7 +208,6 @@ def generic_management_ui(category_name, sheet_name, display_col):
         
         with st.form(f"form_{sheet_name}"):
             payload = {}
-            # Exibe todos os campos menos ID
             for col in EXPECTED_COLS.get(sheet_name):
                 if col == id_col: continue
                 val = curr.get(col, "")
@@ -254,15 +238,17 @@ def generic_management_ui(category_name, sheet_name, display_col):
                 st.success("Salvo!")
                 time.sleep(0.5)
                 st.rerun()
+        
         if st.button("Cancelar"):
             st.session_state[state_key] = None
             st.rerun()
 
-# --- UI ESPECÍFICA PARA PRESTADORES (COM CEP E VALIDAÇÃO) ---
+# --- UI ESPECÍFICA PARA PRESTADORES (CORRIGIDA: SEM DUPLICAÇÃO) ---
 def provider_management_ui():
     st.subheader("Gestão de Prestadores")
     state_key = 'edit_prestador_id'
     
+    # LISTA
     if st.session_state[state_key] is None:
         c_top, _ = st.columns([0.3, 0.7])
         if c_top.button("➕ Novo Prestador"):
@@ -287,8 +273,9 @@ def provider_management_ui():
                     st.success("Excluído!")
                     time.sleep(1)
                     st.rerun()
+    
+    # FORMULÁRIO (MANUAL, SEM LOOP, SEM DUPLICAÇÃO)
     else:
-        # FORMULÁRIO DO PRESTADOR
         df = get_sheet_data('prestador')
         is_new = st.session_state[state_key] == 'NEW'
         curr = {}
@@ -296,46 +283,18 @@ def provider_management_ui():
             res = df[df['id_prestador'] == st.session_state[state_key]]
             if not res.empty: curr = res.iloc[0].to_dict()
 
-        # Inicia variáveis para preenchimento automático
-        if 'prov_cep' not in st.session_state: st.session_state.prov_cep = str(curr.get('cep', ''))
+        # Inicializa session_state para busca de CEP se não existir
         if 'prov_end' not in st.session_state: st.session_state.prov_end = str(curr.get('endereco', ''))
-        if 'prov_cid' not in st.session_state: st.session_state.prov_cid = str(curr.get('cidade', ''))
         if 'prov_bai' not in st.session_state: st.session_state.prov_bai = str(curr.get('bairro', ''))
+        if 'prov_cid' not in st.session_state: st.session_state.prov_cid = str(curr.get('cidade', ''))
 
-        with st.form("form_prestador"):
-            st.write("### Dados da Empresa")
-            empresa = st.text_input("Nome da Empresa (Obrigatório)*", value=curr.get('empresa', ''))
-            
-            c1, c2 = st.columns(2)
-            cnpj = c1.text_input("CNPJ", value=curr.get('cnpj', ''))
-            nome_prest = c2.text_input("Nome do Contato", value=curr.get('nome_prestador', ''))
-            
-            tel = st.text_input("Telefone", value=str(curr.get('telefone', '')))
-            
-            st.write("### Endereço")
-            cc1, cc2 = st.columns([0.4, 0.6])
-            
-            # Campo de CEP com funcionalidade de busca
-            cep_input = cc1.text_input("CEP (Somente Números)", value=curr.get('cep', ''))
-            
-            # Botão de busca fora do fluxo principal para injetar dados no form
-            # Nota: Em forms do Streamlit, botões internos recarregam a página.
-            # Vamos usar um submit secundário ou apenas instruir. 
-            # A melhor forma dentro de um form é processar tudo no final, 
-            # mas para preencher visualmente, precisamos de um container separado.
-            
-            # WORKAROUND PARA CEP DENTRO DO FORM: 
-            # O Streamlit não atualiza outros campos dinamicamente dentro de um st.form enquanto digita.
-            # Então faremos a lógica de CEP fora do form se quisermos interatividade, ou processamos na hora de salvar.
-            # Vou colocar o CEP e a busca ANTES do form principal para permitir o preenchimento.
-            
-        # --- BLOCO DE CEP FORA DO FORM PARA PERMITIR AUTO-FILL ---
-        st.info("Preencha o CEP e clique na lupa para buscar o endereço.")
-        c_cep, c_btn_cep = st.columns([0.4, 0.6])
-        input_cep_val = c_cep.text_input("Digite o CEP:", value=curr.get('cep', ''), key="viacep_input")
+        # --- ÁREA DE BUSCA DE CEP (FORA DO FORM PARA FUNCIONAR) ---
+        st.markdown("##### 📍 Endereço Automático")
+        c_cep, c_btn = st.columns([0.4, 0.6])
+        input_cep = c_cep.text_input("CEP:", value=str(curr.get('cep', '')), key="input_cep_search")
         
-        if c_btn_cep.button("🔍 Buscar Endereço"):
-            data_cep = consultar_cep(input_cep_val)
+        if c_btn.button("🔍 Buscar CEP"):
+            data_cep = consultar_cep(input_cep)
             if data_cep:
                 st.session_state.prov_end = data_cep.get('logradouro', '')
                 st.session_state.prov_bai = data_cep.get('bairro', '')
@@ -343,58 +302,66 @@ def provider_management_ui():
                 st.success("Endereço encontrado!")
             else:
                 st.error("CEP não encontrado.")
-        
-        # --- FORMULÁRIO FINAL ---
-        with st.form("form_prestador_final"):
-            # Usa os valores do session_state (atualizados pelo CEP) ou do banco
-            end_val = st.session_state.prov_end if st.session_state.prov_end else curr.get('endereco', '')
-            bai_val = st.session_state.prov_bai if st.session_state.prov_bai else curr.get('bairro', '')
-            cid_val = st.session_state.prov_cid if st.session_state.prov_cid else curr.get('cidade', '')
+
+        # --- FORMULÁRIO PRINCIPAL ---
+        with st.form("form_prestador_manual"):
+            st.markdown("##### 🏢 Dados da Empresa")
             
-            endereco = st.text_input("Endereço", value=end_val)
-            c_num, c_bai = st.columns([0.3, 0.7])
-            numero = c_num.text_input("Número", value=str(curr.get('numero', '')))
-            bairro = c_bai.text_input("Bairro", value=bai_val)
-            cidade = st.text_input("Cidade", value=cid_val)
+            # Campo Empresa com Validação
+            val_empresa = st.text_input("Nome da Empresa (Obrigatório)*", value=curr.get('empresa', ''))
             
-            # E-MAIL REMOVIDO CONFORME SOLICITADO
+            c1, c2 = st.columns(2)
+            val_cnpj = c1.text_input("CNPJ", value=curr.get('cnpj', ''))
+            val_contato = c2.text_input("Nome do Contato", value=curr.get('nome_prestador', ''))
             
+            val_tel = st.text_input("Telefone", value=str(curr.get('telefone', '')))
+            
+            st.markdown("##### 🏠 Detalhes do Endereço")
+            # Usa Session State para pegar o valor vindo do botão Buscar CEP
+            val_end = st.text_input("Endereço", value=st.session_state.prov_end)
+            
+            cn, cb = st.columns([0.3, 0.7])
+            val_num = cn.text_input("Número", value=str(curr.get('numero', '')))
+            val_bai = cb.text_input("Bairro", value=st.session_state.prov_bai)
+            
+            val_cid = st.text_input("Cidade", value=st.session_state.prov_cid)
+            
+            # Botão de Salvar
             if st.form_submit_button("💾 Salvar Prestador"):
-                # 🟢 VALIDAÇÃO DE EMPRESA
-                if not empresa or empresa.strip() == "":
-                    st.error("Erro: O campo 'Nome da Empresa' é obrigatório.")
+                # VALIDAÇÃO OBRIGATÓRIA
+                if not val_empresa or val_empresa.strip() == "":
+                    st.error("❌ Erro: O campo 'Nome da Empresa' é obrigatório!")
                 else:
                     payload = {
-                        'empresa': empresa,
-                        'telefone': tel,
-                        'nome_prestador': nome_prest,
-                        'cnpj': cnpj,
-                        'email': "", # Salva vazio para manter compatibilidade com schema
-                        'cep': input_cep_val,
-                        'endereco': endereco,
-                        'numero': numero,
-                        'cidade': cidade,
-                        'bairro': bairro
+                        'empresa': val_empresa,
+                        'telefone': val_tel,
+                        'nome_prestador': val_contato,
+                        'cnpj': val_cnpj,
+                        'email': "", # E-mail removido visualmente, mas salvo vazio no banco
+                        'cep': input_cep,
+                        'endereco': val_end,
+                        'numero': val_num,
+                        'cidade': val_cid,
+                        'bairro': val_bai
                     }
                     
-                    with st.spinner("Salvando..."):
+                    with st.spinner("Processando..."):
                         if is_new: execute_crud_operation('prestador', data=payload, operation='insert')
                         else: execute_crud_operation('prestador', data=payload, id_value=st.session_state[state_key], operation='update')
                     
                     st.session_state[state_key] = None
-                    # Limpa estados temporários
-                    for k in ['prov_cep', 'prov_end', 'prov_cid', 'prov_bai']:
+                    # Limpa auxiliares
+                    for k in ['prov_end', 'prov_bai', 'prov_cid']: 
                         if k in st.session_state: del st.session_state[k]
                         
                     st.success("Salvo com sucesso!")
                     time.sleep(0.5)
                     st.rerun()
 
-        if st.button("Cancelar Edição"):
+        if st.button("Cancelar"):
             st.session_state[state_key] = None
             st.rerun()
 
-# --- UI PARA SERVIÇOS ---
 def service_management_ui():
     st.subheader("Gestão de Serviços")
     state_key = 'edit_servico_id'
@@ -442,6 +409,7 @@ def service_management_ui():
         curr = {}
         curr_id_v = 0
         curr_id_p = 0
+        
         if not is_new:
             res = df_serv[df_serv['id_servico'] == st.session_state[state_key]]
             if not res.empty:
@@ -515,11 +483,13 @@ def run_auto_test_data():
     execute_crud_operation('veiculo', data={'nome': 'Civic Teste', 'placa': 'TST-0001', 'ano': 2023, 'valor_pago': 150000, 'data_compra': '2023-01-01'}, operation='insert')
     execute_crud_operation('prestador', data={'empresa': 'Oficina Master', 'telefone': 1199999, 'cnpj': '00.000/0001-00'}, operation='insert')
     time.sleep(1)
+    st.cache_data.clear()
     
-    df_v = get_sheet_data('veiculo', force_refresh=True)
-    df_p = get_sheet_data('prestador', force_refresh=True)
+    df_v = get_sheet_data('veiculo')
+    df_p = get_sheet_data('prestador')
     
-    id_v, id_p = 0, 0
+    id_v = 0
+    id_p = 0
     if not df_v.empty:
         res = df_v[df_v['placa'] == 'TST-0001']
         if not res.empty: id_v = int(res.iloc[0]['id_veiculo'])
@@ -621,11 +591,12 @@ def main():
 
     # ABA MANUAL
     with tab_manual:
-        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="nav_manual")
+        # CORREÇÃO: Chave única no menu para limpar cache visual do "se"
+        opcao = st.radio("Gerenciar:", ["Veículo", "Serviço", "Prestador"], horizontal=True, key="menu_principal_novo")
         st.divider()
         if opcao == "Veículo": generic_management_ui("Veículo", "veiculo", "nome")
         elif opcao == "Serviço": service_management_ui()
-        elif opcao == "Prestador": provider_management_ui() # 🟢 UI NOVA
+        elif opcao == "Prestador": provider_management_ui()
 
 if __name__ == '__main__':
     main()
